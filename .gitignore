@@ -1,0 +1,22 @@
+# ——— 运行期数据(绝不入库) ———
+# state/ 里是观察器日志、心跳、任务记录(task.json/meta.json/stderr.log)。
+# 它们含**本机绝对路径、工作区名、任务提示词与子代理输出** —— 属于用户私有数据。
+state/
+
+# ——— 依赖与构建产物 ———
+node_modules/
+*.tgz
+
+# ——— 编辑器 / 系统 ———
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ——— 临时与诊断 ———
+*.log
+*.tmp
+.tmp-*
+tmp/
+*.bak-dshsubagent-*

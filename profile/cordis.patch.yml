@@ -1,0 +1,130 @@
+# dsh profile: subagent
+#
+# 供外部 harness(Cursor / Claude Code / Codex / Gemini CLI / Kiro / Qoder /
+# Antigravity …)把整个 DSH 实例当作一个 subagent 调用:
+#
+#   dsh --profile subagent --prompt-file <任务文件> \
+#       [--result-file <结果文件>] [--metadata-file <元数据 JSON>] \
+#       [--provider <id>] [--model <id>]
+#
+# cwd = 目标工作空间;stdout 只输出最终答复;退出码 0 = 正常完成。
+# 会话按 DSH 常规持久化到 $DSH_HOME/sessions/<工作空间>/session-<uuid>/,
+# 因此这些子代理会话可以直接在 DSH GUI 里复查。
+#
+# 基线是 @deepseek-ai/dsh-headless(一次性 runner)。本层只做五件事:
+#   1. 换掉只认 argv 的 headless-startup,改成支持 --prompt-file / --result-file /
+#      --metadata-file / --model 的解析器;
+#   2. 换掉 headless-runner,改成能写结果文件与元数据、能单次指定模型的 runner;
+#   3. 关掉 LLM 起标题(无人查看标题,白花一次模型调用和时延);
+#   4. 审批策略固定为 never —— 子代理是非交互进程,没有人能点「同意」;
+#   5. 沙箱模式由 DSH_SUBAGENT_PERMISSION 决定,默认 danger-full-access
+#      (调用方本来就是有写权限的 harness;可用 read-only / workspace-write 收紧)。
+
+# 1 + 2. 用本 profile 自己的启动解析器与 runner 取代 headless 的同名 row。
+- id: headless-startup
+  disabled: true
+
+- id: headless-runner
+  disabled: true
+
+# 3. 省掉一次 LLM 调用:标题回退到首条提示词的截断版本即可。
+- id: session-title-llm
+  disabled: true
+
+# 4. 非交互:一律不请求审批。
+- id: approval
+  config:
+    policy: never
+
+# 5. 沙箱:整块 config 是浅覆盖,必须同时给出 mode 与 workspaceRoot。
+- id: sandbox-policy
+  config:
+    mode: !!js process.env.DSH_SUBAGENT_PERMISSION ?? process.env.DSH_PERMISSION_MODE ?? 'danger-full-access'
+    workspaceRoot: !!js process.cwd()
+
+# 6. 权限预设:必须与上面的 (沙箱模式, 审批策略) 组合**逐字对齐**,否则
+#    dsh-permission-presets 在构造时推导不出预设、直接抛
+#    「composed sandbox and approval defaults match no preset」,整棵插件树加载失败,
+#    子进程在 agent 起来之前就以退出码 1 结束(实测:--permission workspace-write 必崩)。
+#
+#    原因是 dsh-base 自带的预设表把 workspace-write / read-only 配成 approval: ask,
+#    而本 profile 第 4 条把审批固定成 never:
+#        danger-full-access + never → 命中自带表 ✔(所以默认档一直能跑)
+#        workspace-write   + never → 无表项 ✘ → 崩
+#        read-only         + never → 无表项 ✘ → 崩
+#
+#    这里显式声明一张「无人值守」预设表:三种沙箱模式都配 approval: never。
+#    语义上这是正确的:没有人类可以点「同意」,越界操作应当被沙箱**直接拒绝**而不是挂起等审批。
+#    defaultPreset 跟沙箱模式取同一个环境变量,保证两者永远一致。
+- id: permission
+  config:
+    defaultPreset: !!js process.env.DSH_SUBAGENT_PERMISSION ?? 'danger-full-access'
+    presets:
+      read-only:
+        sandbox: read-only
+        approval: never
+        name: 'read-only(无人值守)'
+        description: '只读:写入与越界命令由沙箱直接拒绝,不请求审批。'
+      workspace-write:
+        sandbox: workspace-write
+        approval: never
+        name: 'workspace-write(无人值守)'
+        description: '只能写工作区(workspaceRoot)与允许的临时目录;越界写入直接拒绝,不请求审批。'
+      danger-full-access:
+        sandbox: danger-full-access
+        approval: never
+        name: 'danger-full-access'
+        description: 'Full file access without approval prompts.'
+
+# 7. 只做叶子:由**外部调用方**(Cursor / Claude Code / Codex …)经 dsh_task 调进来的任务
+#    **不允许再分叉**。这里关掉的都是"能造出更多 agent"的工具:
+#
+#      tool-subagent            subagent(同进程子代理)
+#      tool-subagent-fork       subagent_fork(继承上下文的子代理)
+#      tool-workflow            workflow(脚本里 agent() 扇出,等于批量分叉)
+#      workflow-worker-thread   workflow 的 worker 线程(没有 workflow 就用不到)
+#      tool-ralph               ralph(每轮开一个新子代理)
+#      tool-subagent-control    list_agents / send_message / interrupt_agent(没有子代理就无事可做)
+#      tool-subagent-list-agents
+#
+#    只关**工具**,不关服务(subagent / subagent-spawn-in-process / subagent-fork-in-process 保持加载):
+#    没有工具就没有调用者,但关服务会让 inject 这些服务的插件加载失败,风险大收益小。
+#
+#    ⚠️ 这条闸门只管**进程内**的分叉通道。DSH 自己内部派活走的是原生 subagent(桌面 profile),
+#    不受影响;另外任何有 shell 的 agent 都能自己起一个 dsh 进程,那属于"本来就有终端权限"的
+#    范畴,不作为可执行边界来承诺(任务现场与审计仍完整落盘)。
+- id: tool-subagent
+  disabled: true
+
+- id: tool-subagent-fork
+  disabled: true
+
+- id: tool-workflow
+  disabled: true
+
+- id: workflow-worker-thread
+  disabled: true
+
+- id: tool-ralph
+  disabled: true
+
+- id: tool-subagent-control
+  disabled: true
+
+- id: tool-subagent-list-agents
+  disabled: true
+
+- insert:
+    - id: subagent-startup
+      name: './subagent-startup.js'
+
+    - id: subagent-runner
+      name: './subagent-runner.js'
+      inject: [subagentStartup]
+      config:
+        task: !!js ctx.subagentStartup.task
+        resultFile: !!js ctx.subagentStartup.resultFile
+        metadataFile: !!js ctx.subagentStartup.metadataFile
+        provider: !!js ctx.subagentStartup.provider
+        model: !!js ctx.subagentStartup.model
+        reasoningEffort: !!js ctx.subagentStartup.reasoningEffort

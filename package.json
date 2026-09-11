@@ -1,0 +1,50 @@
+{
+  "name": "deepseek-harnessed",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "把整个 DeepSeek Harness 实例变成 Cursor / Claude Code / Codex 等 harness 可调用的 subagent:一个 MCP 桥接层 + 一个 GUI 实时监控插件。",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "mcp",
+    "model-context-protocol",
+    "subagent",
+    "cursor",
+    "claude-code",
+    "codex"
+  ],
+  "license": "MIT",
+  "author": "xDJTomato",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xDJTomato/deepseek-harnessed.git"
+  },
+  "homepage": "https://github.com/xDJTomato/deepseek-harnessed#readme",
+  "bugs": {
+    "url": "https://github.com/xDJTomato/deepseek-harnessed/issues"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "os": [
+    "win32"
+  ],
+  "bin": {
+    "dsh-subagent": "./bin/dsh-subagent.mjs",
+    "dsh-subagent-mcp": "./bin/dsh-subagent-mcp.mjs"
+  },
+  "scripts": {
+    "install-bridge": "node install.mjs",
+    "install-bridge:dry": "node install.mjs --dry-run",
+    "uninstall-bridge": "node uninstall.mjs",
+    "test": "node test/selftest.mjs",
+    "test:panel": "node test/panel-selftest.mjs",
+    "test:observer": "node test/observer-selftest.mjs",
+    "test:ledger": "node test/ledger-liveness-probe.mjs",
+    "test:monitor": "node test/monitor-autostart-probe.mjs",
+    "test:leaf": "node test/leaf-only-probe.mjs",
+    "test:usage": "node test/usage-fold-probe.mjs --all",
+    "audit": "node test/live-audit.mjs"
+  }
+}

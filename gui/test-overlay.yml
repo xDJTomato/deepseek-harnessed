@@ -1,0 +1,8 @@
+# 临时 overlay:只为在一次性 web 实例里验证 dsh-subagent-panel 能否进入浏览器启动图。
+# 正式安装由 install.mjs 写入 desktop profile 的受管区块,不用这个文件。
+#
+# 路径是**相对本文件**的('.' = 这个 yml 所在目录),和 profile/cordis.patch.yml 里
+# './subagent-startup.js' 同一套写法 —— 这样仓库在任何机器上都能直接跑探针,不含绝对路径。
+- insert:
+    - id: dsh-subagent-panel
+      name: './lib/index.js'
