@@ -16,11 +16,34 @@ import { writeFileSync } from 'node:fs';
 import process from 'node:process';
 import z from '@deepseek-ai/schemastery';
 import { installModelSelection } from '@deepseek-ai/dsh-agent';
-import { assertNever, createUserMessage } from '@deepseek-ai/dsh-llm';
+import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { SessionId } from '@deepseek-ai/dsh-session';
 
 /** 稳定的 Cordis 插件名。 */
 export const name = 'subagent-runner';
+
+/**
+ * 未知 chunk 类型的兜底(原先是 `dsh-llm` 的 `assertNever`)。
+ *
+ * **为什么自己写一个**:DSH 0.1.5-rc.1 起 `@deepseek-ai/dsh-llm` 不再导出 `assertNever`,
+ * 而 runner 的 import 列表里带着它 ⇒ 整个 subagent profile 在插件树加载阶段就
+ * `SyntaxError: does not provide an export named 'assertNever'`,`dsh_task` 1.5 秒即失败、
+ * 文件写不出来、答复为空(实测)。
+ *
+ * 语义也顺势调整:原来会**抛异常**,意味着新版一旦给推理流加一种 chunk 类型就会整轮崩掉。
+ * 现在是"告警 + 忽略"—— 只影响流式展示,不影响任务本身的成败,这正是穷尽性检查该有的降级方式。
+ *
+ * @param value - 未识别的 chunk。
+ * @param context - 用在哪条流上(只用于日志)。
+ */
+function warnUnknownChunk(value, context) {
+	try {
+		const text = JSON.stringify(value);
+		internals.stderr.write(`[subagent] 忽略未知的${context} chunk: ${text === undefined ? String(value) : text.slice(0, 200)}\n`);
+	} catch {
+		internals.stderr.write(`[subagent] 忽略未知的${context} chunk\n`);
+	}
+}
 
 /** 一轮任务开始前必须就绪的核心服务。 */
 export const inject = ['agentDefaultModel', 'agents', 'sessions'];
@@ -120,7 +143,8 @@ function streamReasoning(ctx, agent, stderr) {
 				close();
 				return;
 			default:
-				return assertNever(chunk, 'subagent reasoning stream');
+				// 未知 chunk:只告警,不打断这一轮(见 warnUnknownChunk 的说明)。
+				return warnUnknownChunk(chunk, 'subagent reasoning stream');
 		}
 	});
 	return () => {
@@ -160,9 +184,28 @@ function describeReason(reason) {
 	};
 }
 
-/** 报错并请求失败退出。 */
+/**
+ * 报错并请求失败退出。
+ *
+ * 打印**完整栈**:只打 `error.message` 时,DSH 升级导致的 API 形状变化会表现为
+ * 一句没头没尾的 `dsh: Cannot read properties of undefined (reading 'header')`
+ * (实测 0.1.5-rc.1),根本定位不到是哪一步调用。栈里带着 DSH 内部帧,能直接读出
+ * 是哪个插件/哪一行变了。
+ *
+ * @param io - 进程副作用。
+ * @param error - 捕获到的异常。
+ */
 function fail(io, error) {
-	io.stderr.write(`dsh: ${error instanceof Error ? error.message : String(error)}\n`);
+	const message = error instanceof Error ? error.message : String(error);
+	io.stderr.write(`dsh: ${message}\n`);
+	if (error instanceof Error && typeof error.stack === 'string') {
+		io.stderr.write(`${error.stack}\n`);
+	}
+	if (error instanceof AggregateError) {
+		for (const inner of error.errors ?? []) {
+			io.stderr.write(`  ↳ ${inner instanceof Error ? inner.stack ?? inner.message : String(inner)}\n`);
+		}
+	}
 	io.exit(1);
 }
 
@@ -202,14 +245,47 @@ function pinPermission(ctx, agent) {
 	if (!presets.names.includes(requested)) {
 		throw new Error(`subagent-runner: 未知权限档位 "${requested}"(可用: ${presets.names.join(', ')})`);
 	}
-	const before = presets.current(agent.session.events);
+	const before = currentPreset(presets, agent.session);
 	if (before === requested) return null;
 	presets.set(agent.session, requested);
-	const after = presets.current(agent.session.events);
+	const after = currentPreset(presets, agent.session);
 	if (after !== requested) {
 		throw new Error(`subagent-runner: 权限锁定失败(${before} → ${after},目标 ${requested})`);
 	}
 	return `dsh: 权限 ${before} → ${requested}(已写入本会话事件,工具层按会话解析)`;
+}
+
+/**
+ * 读当前权限档位。
+ *
+ * **跨版本**:DSH 0.1.5-rc.1 起 `permissionPresets.current()` 收的是 **Session 对象**
+ * (`permissionState(session)` → 走 session 投影读 knobs);0.1.4 及更早收的是**事件数组**
+ * (`derive(foldKnobs(events))`)。传错形状不会报"参数不对",而是从 DSH 内部炸出一句
+ * `Cannot read properties of undefined (reading 'header')`(实测),极难定位 ——
+ * 所以这里先按新版调,失败再按旧版调,两条路都不通才把原始错误抛出去。
+ *
+ * @param presets - `permissionPresets` 服务。
+ * @param session - 目标 Session。
+ * @returns 当前生效的档位名。
+ */
+function currentPreset(presets, session) {
+	try {
+		return presets.current(session);
+	} catch (error) {
+		const events = session.log ?? session.events;
+		if (Array.isArray(events)) return presets.current(events);
+		throw error;
+	}
+}
+
+/**
+ * 取一个 Session 的事件流(新版叫 `log`,旧版叫 `events`)。
+ * @param session - 目标 Session。
+ * @returns 事件数组(取不到时为空数组)。
+ */
+function eventsOf(session) {
+	const events = session.log ?? session.events;
+	return Array.isArray(events) ? events : [];
 }
 
 /**
@@ -280,7 +356,7 @@ async function run(ctx, config, io) {
 	}
 
 	await sessions.flush(agent.session);
-	const outcome = summarize(agent.session.events, firstSeq);
+	const outcome = summarize(eventsOf(agent.session), firstSeq);
 	const reason = describeReason(outcome.reason);
 	const metadata = {
 		sessionId: String(agent.session.id),

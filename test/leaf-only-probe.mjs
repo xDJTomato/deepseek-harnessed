@@ -32,8 +32,15 @@ const GATE_ROWS = [
 	'tool-subagent-control',
 	'tool-subagent-list-agents',
 ];
-/** 这些行**不能**被误关(关掉会把正常干活的能力也砍了)。 */
-const KEEP_ROWS = ['tool-fs', 'tool-pwsh', 'tool-bash', 'tool-goal', 'tool-todo', 'tool-web', 'tool-subagent-report'];
+/**
+ * 这些行**不能**被误关(关掉会把正常干活的能力也砍了)。
+ *
+ * 版本注记:0.1.4 及更早这里还有 `tool-subagent-report`;0.1.5-rc.1 起它不再是 loader 行
+ * (`--dump-config` 里查不到),`subagent-report` 变成了会话协议里的一个消息 kind
+ * (`case "coordinator": case "subagent-report"`)。行没了却继续断言它"没被误关",
+ * 会以 `undefined` 形式误报失败 —— 这正是 DSH 升级后本探针唯一的失败项。
+ */
+const KEEP_ROWS = ['tool-fs', 'tool-pwsh', 'tool-bash', 'tool-goal', 'tool-todo', 'tool-web'];
 /** 工具表里不该出现的名字(分叉通道)。 */
 const FORK_TOOLS = ['subagent', 'subagent_fork', 'workflow', 'ralph', 'list_agents', 'send_message', 'interrupt_agent'];
 

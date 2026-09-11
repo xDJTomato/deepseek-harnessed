@@ -87,8 +87,13 @@
 #      tool-subagent-control    list_agents / send_message / interrupt_agent(没有子代理就无事可做)
 #      tool-subagent-list-agents
 #
-#    只关**工具**,不关服务(subagent / subagent-spawn-in-process / subagent-fork-in-process 保持加载):
-#    没有工具就没有调用者,但关服务会让 inject 这些服务的插件加载失败,风险大收益小。
+#    只关**工具**,不关服务(subagent 服务保持加载):没有工具就没有调用者,而关服务会让
+#    inject 这些服务的插件加载失败,风险大收益小。
+#
+#    实测(0.1.5-rc.1):base bundles 已经把 subagent-spawn-in-process / subagent-fork-in-process
+#    这两个"进程内分叉"服务行全局关掉了(subagent 与 desktop profile 的 --dump-config 都是关闭)。
+#    我们**不去补丁**它们:关着当然更好,但那是上游默认,不是我们承诺的边界 ——
+#    这里的边界只由下面 7 行工具定义(工具没了,就没有调用者)。
 #
 #    ⚠️ 这条闸门只管**进程内**的分叉通道。DSH 自己内部派活走的是原生 subagent(桌面 profile),
 #    不受影响;另外任何有 shell 的 agent 都能自己起一个 dsh 进程,那属于"本来就有终端权限"的

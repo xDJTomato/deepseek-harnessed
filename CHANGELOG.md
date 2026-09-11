@@ -2,6 +2,40 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/);日期为本地实测日期。
 
+## [0.1.1] — 2026-09-11
+
+**适配 DSH 0.1.5-rc.1**。升级当场打坏了整个桥接层(协议级自检 43/51:`dsh_task` 1.5 秒即失败、
+不写文件、答复为空),修完后 272/272 全绿。
+
+### 修复(破坏性 API 变化)
+
+- **`@deepseek-ai/dsh-llm` 不再导出 `assertNever`**(搬到 `dsh-util-values`):`subagent-runner.js`
+  还带着这个 import,导致 subagent profile 在插件树加载阶段就
+  `SyntaxError: does not provide an export named 'assertNever'` —— 表现为"任务跑完了但什么都没发生",
+  最难查的一种坏法。改为 runner 内的 `warnUnknownChunk()`:未知 chunk **告警并忽略**,
+  而不是抛异常(旧语义下,新版一旦给推理流加一种 chunk 类型就会整轮崩掉)。
+- **`permissionPresets.current()` 改收 Session 对象**(原先收事件数组):传错形状不从参数校验报错,
+  而是从 DSH 内部炸出 `Cannot read properties of undefined (reading 'header')`。新增
+  `currentPreset()`:先按新版调,失败再按旧版调,两条路都不通才抛原始错误 —— 同时兼容 ≤0.1.4。
+- **`session.events` → `session.log`**:新增 `eventsOf(session)` 兼容两个名字。
+- `fail()` 现在打印**完整栈**。原先只打 `error.message`,上面第二条最初只表现为一句没头没尾的报错。
+
+### 测试与工具
+
+- `test/leaf-only-probe.mjs`:去掉失效的 `tool-subagent-report` 断言(0.1.5 起它不再是 loader 行,
+  `subagent-report` 变成会话协议里的消息 kind),并在注释里写明版本注记。
+- `test/monitor-live-probe.mjs`:GUI 宿主判定从**排除法**改成**正面识别**(真宿主必定带 `--type=` 子进程)。
+  旧写法会把宿主派生的瞬时进程误判成第二个 GUI,导致"没有重复宿主"这条断言随时误报。
+- `profile/cordis.patch.yml`:更正"进程内分叉服务保持加载"的过期注释 —— 实测 0.1.5 的 base bundles
+  已把这 `subagent-spawn-in-process` / `subagent-fork-in-process` 全局关闭(两个 profile 都是)。
+- README 新增「DSH 版本兼容性」章节,并校准目录树里几处过期计数。
+
+### 已知上游问题(与本插件无关)
+
+- 随 0.1.5-rc.1 发布的 `lsp-stdio` / `tool-lsp` 没跟上 `assertNever` 迁移,import 即失败;
+  插件树是整体加载语义,所以 `dsh --profile web` **完全起不来**。桌面宿主不受影响
+  (它的插件树里没有这两行,日志也无该错误)。给你留了两行 overlay 的临时绕开办法。
+
 ## [0.1.0] — 2026-09-11
 
 首个公开版本。三部分一起来:**MCP 桥接层 + DSH `subagent` profile + DSH Desktop GUI 监控插件**。
@@ -52,4 +86,4 @@
 - `install.mjs` 一条命令装配全部:**幂等**、**先备份**、**永不覆盖解析失败的 JSON 配置**,
   支持 `--dry-run` 与 `--only profile,observer,panel,cursor,…`。
 - `uninstall.mjs` 按受管标记精确摘除。
-- 离线自检套件(273 项)全部可用 `node test\*.mjs` 复跑,含真实多帧 zstd 日志与真进程判活。
+- 离线自检套件(272 项)全部可用 `node test\*.mjs` 复跑,含真实多帧 zstd 日志与真进程判活。

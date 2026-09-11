@@ -12,6 +12,7 @@
 | 项目 | 要求 | 怎么确认 |
 | --- | --- | --- |
 | DSH Desktop | 已安装并能启动 GUI(桥接层最终调用的就是它的 `dsh` 启动器) | `dsh --version` 能打印版本 |
+| DSH 版本 | **0.1.5-rc.1 已适配并全量实测**;0.1.4 及更早同样兼容(三处 API 变化都做了向前兼容) | `dsh --version` |
 | `dsh` 在 PATH 上 | 安装器会用 `lib/launcher.mjs` 解析启动器;解析不到会明确报错 | `dsh --where` 或 `where dsh` |
 | Node.js ≥ 24 | 观察器与测试用到 `node:zlib` 的 zstd、`fs` 的新行为 | `node -v` |
 | 操作系统 | **Windows**(进程判活/强杀走 `taskkill` 与 PowerShell 进程快照) | — |
@@ -80,14 +81,26 @@ node test\selftest.mjs
 ### 完整自检套件(改过代码后再跑)
 
 ```powershell
+npm run test:all                      # 上面 7 个探针一次跑完(272 项)
+```
+
+或逐个跑:
+
+```powershell
 node test\panel-selftest.mjs         # 悬浮卡片逻辑
+node test\selftest.mjs               # 协议级端到端:真拉 MCP server + 真跑一轮任务
 node test\observer-selftest.mjs      # GUI 观察器(投影 / 判活 / token 折叠 / 吞吐口径)
 node test\ledger-liveness-probe.mjs  # 台账幽灵记录(按 pid 判活)
 node test\monitor-autostart-probe.mjs# 监控窗口自动拉起(假 exe,**不会真启动 GUI**)
 node test\leaf-only-probe.mjs        # 叶子闸门:外部任务不许再分派子代理
+node test\monitor-live-probe.mjs     # 真心跳 + 真 dsh_task:验 already-running 分支
 node test\usage-fold-probe.mjs --all # 真实任务日志 → token 用量(只读)
 node test\live-audit.mjs             # 现场审计:真的在跑几个 / 幽灵几个 / 宿主状态
 ```
+
+> **升级 DSH 之后先跑这三个**:`selftest`(最灵敏,升级打坏桥接层时它第一个红)、
+> `leaf-only-probe`(row id 有没有被改名/删掉)、`monitor-live-probe`(观察器与宿主判活)。
+> 版本兼容性细节见 README 的「DSH 版本兼容性」章节。
 
 ---
 

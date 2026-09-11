@@ -45,6 +45,63 @@ Gemini CLI / Antigravity / Kiro / Qoder / VS Code(Copilot)/ opencode** 调用的
 
 ---
 
+## DSH 版本兼容性
+
+桥接层跑在 DSH **内部**(一个 profile + 两个宿主插件),所以 DSH 升级会直接打到我们身上。
+下面这张表是**实测**结果,不是推测:宿主插件目录里的 `app.asar.unpacked/` 会留下旧版同名包,
+照它读会得出错误结论,正确做法是从 `app.asar` 里读运行时真正加载的那份源码。
+
+| DSH 版本 | 状态 | 说明 |
+| --- | --- | --- |
+| **0.1.5-rc.1** | ✅ 已适配并全量实测 | 破坏性 API 变化 3 处,见下 |
+| 0.1.4 及更早 | ✅ 仍兼容 | 三处变化都做了向前兼容(见下) |
+
+### 0.1.5-rc.1 的三处破坏性变化(以及我们怎么处理)
+
+| 变化 | 症状 | 处理 |
+| --- | --- | --- |
+| `@deepseek-ai/dsh-llm` **不再导出 `assertNever`**(搬到了 `dsh-util-values`) | **最凶的一个**:profile 在插件树加载阶段就 `SyntaxError`,`dsh_task` 1.5 秒即失败、不写文件、答复为空 —— 看起来像"任务跑完了但什么都没发生" | 去掉该 import,改成 runner 内的 `warnUnknownChunk()`:未知 chunk **告警并忽略**,不再让一个未知事件类型打断整轮 |
+| `permissionPresets.current()` 改收 **Session 对象**(原先收事件数组) | 传错形状不报"参数不对",而是从 DSH 内部炸出 `Cannot read properties of undefined (reading 'header')`,栈里全是 DSH 内部帧,极难定位 | 新增 `currentPreset()`:先按新版调(session),失败再按旧版调(events),两条路都不通才抛原错 |
+| `session.events` → **`session.log`** | 同上,取事件流会拿到 `undefined` | 新增 `eventsOf(session)`,兼容两个名字 |
+
+同时 `fail()` 现在会打印**完整栈**(以前只打 `error.message`)。正是因为只打 message,
+上面第 2 条最初只表现为一句没头没尾的报错;栈一出来立刻定位到是 `presets.current()` 的形状变了。
+
+### 上游自身的问题(与本插件无关,但会影响你)
+
+0.1.5-rc.1 里随版本发布的 `lsp-stdio` / `tool-lsp` 两个插件**没有跟上** `assertNever` 的迁移,
+import 时直接抛 `does not provide an export named 'assertNever'`。插件树是**整体加载**语义,
+所以:
+
+- `dsh --profile web` **完全起不来**(实测,与是否装了本插件无关)。
+- **桌面宿主不受影响**:`desktop` profile 的插件树里根本没有这两行(实测 `--dump-config`,
+  宿主日志里也没有 `assertNever`)。
+- 万一你需要 `web` profile,临时绕开办法就是关掉这两行:
+
+  ```yaml
+  - id: lsp-stdio
+    disabled: true
+  - id: tool-lsp
+    disabled: true
+  ```
+
+  (`--patch` 传一个只含这两行的 overlay 即可,已验证能起来。)
+
+### 升级后怎么快速自证没坏
+
+```bash
+dsh --version                                  # 先看版本
+node test/selftest.mjs                         # 协议级端到端:真拉 MCP + 真跑一轮(最能说明问题)
+node test/leaf-only-probe.mjs                  # row id 有没有被改名/删掉
+node test/monitor-live-probe.mjs               # 观察器 + 宿主判活
+```
+
+升版本必看的两类东西:**row id**(我们 patch 了 15 行,改名就静默失配)与**服务方法签名**。
+`test/leaf-only-probe.mjs` 覆盖前者(它自己就抓到过一次:0.1.5 起 `tool-subagent-report`
+不再是 loader 行,`subagent-report` 变成了协议里的消息 kind)。
+
+---
+
 ## 安全与隐私(请先读)
 
 - **桥接层不访问互联网**,它只做两件事:拉起本机 `dsh` 子进程、读写 `$DSH_HOME` 与本机
@@ -939,9 +996,9 @@ DSH 父会话回答完**不会**杀掉子代理(杀了等于丢工作),它们会
 │   ├── dsh-subagent.mjs      CLI:任何 harness 都能 shell 调用
 │   └── dsh-subagent-mcp.mjs  MCP server 入口
 ├── test/
-│   ├── selftest.mjs          协议级端到端自检(50 项)
-│   ├── monitor-autostart-probe.mjs 监控窗口自动拉起自检(26 项,假 exe + 临时 DSH_HOME)
-│   ├── ledger-liveness-probe.mjs   台账幽灵记录自检(20 项,临时 DSH_HOME 造假台账)
+│   ├── selftest.mjs          协议级端到端自检(51 项)
+│   ├── monitor-autostart-probe.mjs 监控窗口自动拉起自检(27 项,假 exe + 临时 DSH_HOME)
+│   ├── ledger-liveness-probe.mjs   台账幽灵记录自检(21 项,临时 DSH_HOME 造假台账)
 │   ├── e2e-harness.mjs       验收脚本:让每个 harness 自己委托一次并核对产物
 │   ├── concurrency-probe.mjs 并发(N 路同时委托)+ 取消验证
 │   ├── tasks-probe.mjs       只验任务层的小烟测
@@ -951,7 +1008,7 @@ DSH 父会话回答完**不会**杀掉子代理(杀了等于丢工作),它们会
 │   ├── live-audit.mjs        活跃审计:真在跑/幽灵/没记 pid/宿主状态/最近任务耗时(--fix 订正幽灵)
 │   ├── monitor-live-probe.mjs 真心跳 + 真 dsh_task:验 already-running 分支,并确认不重复拉起 GUI
 │   ├── usage-fold-probe.mjs  真实任务日志 → token 用量折叠(逐帧解 zstd,验底部状态条的数据源)
-│   ├── leaf-only-probe.mjs   叶子闸门探针(配置级 + 会话日志里的真实工具表)
+│   ├── leaf-only-probe.mjs   叶子闸门探针(14 项:配置级 7 条闸门 + 会话日志里的真实工具表)
 │   ├── gui-graph-probe.mjs   客户端插件启动图探针(真起一个 web 实例)
 │   ├── live-probe.mjs        两采样进度探针(判断任务是否真的在动)
 │   └── dump-session.mjs      解压查看某个 DSH 会话事件时间线
@@ -997,4 +1054,11 @@ Cursor 各委托一次,并核对 DSH 是否真的按内容要求写出了文件)
 | 强制终止 | `dsh_task_kill {caller}` | ✅ 一次杀掉该 caller 的 2 个运行中任务;已结束的重杀报"无需终止" |
 | 注册可见性 | `claude mcp list` / `codex mcp list` | ✅ `dsh` 均显示 Connected / enabled |
 | GUI 可见性 | 会话落在一个按工作区路径编码出来的目录里 | ✅ 执行中文件持续增长(38KB→89KB/25s);GUI 列表可见,但无「执行中」徽标 |
+| **DSH 升级到 0.1.5-rc.1 后回归** | 全套 7 个探针 | ⚠️ 升级当场打坏:`selftest` **43/51**、`leaf-only-probe` 14/15、`monitor-live-probe` 7/8(详见「DSH 版本兼容性」) |
+| 同上,修复后 | 全套 7 个探针 | ✅ **272/272**:panel 117、selftest 51、observer 34、autostart 27、ledger 21、leaf 14、monitor-live 8 |
+| 新版真跑一轮(MCP 桥接层) | `node test/monitor-live-probe.mjs` 内的真 `dsh_task` | ✅ `status=ok` 4.9s,产物落盘,观察器记到 `running=true job=20260911-124736-5c6cbc3c` |
+| 新版直接调 profile | `dsh --profile subagent --prompt "…"` | ✅ `stopReason: completed`,答复「好的」,1.2s |
+| 新版 row id 兼容审计 | 对 `app.asar` 逐个查 12 个被 patch 的行 id | ✅ 12/12 仍存在;新发现 `tool-subagent-report` 不再是 loader 行(变成协议消息 kind),探针已同步 |
+| 新版客户端接入点审计 | 临时 web 实例上取组合 bundle(11.2MB) | ✅ 6/6 仍在:`shell.overlay` / `subagentsByParent` / `projectionValues` / `sessions.open` / `useSessions` / `__ModuleLoader__`;启动图 10/10,卡片 rev `36bac599d008e66e-45` |
+| 上游 lsp 缺陷影响面 | `desktop` profile `--dump-config` + 宿主日志 | ✅ 桌面宿主**不受影响**(没有 `lsp-stdio`/`tool-lsp` 这两行,日志无 `assertNever`);只有 `web` 这类 profile 起不来,已给出两行 overlay 的绕开办法 |
 

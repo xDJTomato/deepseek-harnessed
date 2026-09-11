@@ -90,26 +90,41 @@ class Client {
 
 const textOf = (result) => (result?.content ?? []).filter((part) => part.type === 'text').map((part) => part.text).join('\n');
 
-/** 只看真正的 GUI 宿主:排掉 Chromium 子进程与 CLI 方式跑的 dsh。 */
+/**
+ * 只看真正的 GUI 宿主。
+ *
+ * 为什么不能只做**排除法**(排掉 `--type=` 与 `--expose-internals`):实测 0.1.5-rc.1 上
+ * 这里会误判 —— 宿主派生的瞬时进程(无 `--type=`、无 `--expose-internals`)会被当成
+ * 第二个 GUI 宿主,于是"没有重复宿主"这条断言随机失败(本次实测差点误报)。
+ *
+ * 改成**正面识别**:Electron 主进程一定带着 `--type=renderer` 的子进程(有窗口才有渲染器),
+ * 而 CLI/派生进程不会有。先排掉子进程与 CLI,再要求该 pid 至少有一个 `--type=` 子进程。
+ *
+ * @returns GUI 主进程 pid 数组;查不到进程表时返回 null。
+ */
 function guiHostPids() {
 	return new Promise((resolve) => {
 		const ps = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command',
-			'Get-CimInstance Win32_Process -Filter "Name=\'DSH Desktop.exe\'" | ForEach-Object { "$($_.ProcessId)|$($_.CommandLine)" }',
+			'Get-CimInstance Win32_Process -Filter "Name=\'DSH Desktop.exe\'" | ForEach-Object { "$($_.ProcessId)|$($_.ParentProcessId)|$($_.CommandLine)" }',
 		], { windowsHide: true });
 		let out = '';
 		ps.stdout.setEncoding('utf8');
 		ps.stdout.on('data', (chunk) => { out += chunk; });
 		ps.on('close', () => {
-			const pids = [];
+			const rows = [];
 			for (const line of out.split(/\r?\n/)) {
 				if (line.trim() === '') continue;
-				const cut = line.indexOf('|');
-				const pid = Number.parseInt(line.slice(0, cut), 10);
-				const command = line.slice(cut + 1);
-				if (command.includes('--type=') || command.includes('--expose-internals')) continue;
-				if (Number.isInteger(pid)) pids.push(pid);
+				const [pidText, parentText, ...rest] = line.split('|');
+				const pid = Number.parseInt(pidText, 10);
+				if (!Number.isInteger(pid)) continue;
+				rows.push({ pid, parent: Number.parseInt(parentText, 10), command: rest.join('|') });
 			}
-			resolve(pids);
+			const parents = new Set(rows.filter((row) => row.command.includes('--type=')).map((row) => row.parent));
+			const hosts = rows
+				.filter((row) => !row.command.includes('--type=') && !row.command.includes('--expose-internals'))
+				.filter((row) => parents.has(row.pid))
+				.map((row) => row.pid);
+			resolve(hosts);
 		});
 		ps.on('error', () => resolve(null));
 	});
