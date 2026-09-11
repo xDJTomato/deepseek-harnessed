@@ -17,6 +17,8 @@ import process from 'node:process';
 import { BRIDGE_ROOT } from '../lib/util.mjs';
 
 const MCP_ENTRY = join(BRIDGE_ROOT, 'bin', 'dsh-subagent-mcp.mjs');
+/** package.json 里的版本 —— server 应该报这个,而不是自己硬编码一个。 */
+const manifestVersion = JSON.parse(readFileSync(join(BRIDGE_ROOT, 'package.json'), 'utf8')).version;
 const workspace = process.argv[2] ?? join(BRIDGE_ROOT, 'state', 'selftest-workspace');
 const results = [];
 
@@ -38,10 +40,15 @@ class Client {
 		this.pending = new Map();
 		this.notifications = [];
 		this.nextId = 1;
+		/** server 写过的 stderr:用来验证"正常启动一个字都不写"。 */
+		this.stderrText = '';
 		this.child.stdout.setEncoding('utf8');
 		this.child.stdout.on('data', (chunk) => this.onData(chunk));
 		this.child.stderr.setEncoding('utf8');
-		this.child.stderr.on('data', (chunk) => process.stderr.write(`[server] ${chunk}`));
+		this.child.stderr.on('data', (chunk) => {
+			this.stderrText += chunk;
+			process.stderr.write(`[server] ${chunk}`);
+		});
 	}
 	onData(chunk) {
 		this.buffer += chunk;
@@ -111,6 +118,13 @@ async function main() {
 		clientInfo: { name: 'dsh-subagent-selftest', version: '0.0.1' },
 	});
 	check('MCP initialize', init?.serverInfo?.name === 'dsh-subagent', `protocolVersion=${init?.protocolVersion}`);
+	// 1a2. 版本号只有 package.json 一个来源(曾经硬编码 0.2.0,与仓库 0.1.1 打架)
+	check('serverInfo.version 与 package.json 一致', init?.serverInfo?.version === manifestVersion,
+		`server=${init?.serverInfo?.version} package.json=${manifestVersion}`);
+	// 1a3. 正常启动**不许写 stderr**:Cursor 会把 MCP 子进程的 stderr 渲染成 warning
+	//      (实测 `mcpprocess.log`: `[warning] [McpProcess stderr]   ERR dsh-subagent: MCP stdio server ready …`)
+	check('正常启动不往 stderr 写任何东西(不触发 harness 的 warning)', client.stderrText === '',
+		JSON.stringify(client.stderrText.slice(0, 120)));
 	// 1b. initialize.instructions:harness 会把它当系统提示,委派操作手册必须能到模型手里
 	const instructions = String(init?.instructions ?? '');
 	check('initialize 带委派操作手册 instructions', instructions.length > 400 && instructions.includes('expected_seconds'),
@@ -263,6 +277,18 @@ async function main() {
 	check('dsh_task_kill 无参返回 isError:true', killNoArgs?.isError === true, `isError=${JSON.stringify(killNoArgs?.isError)}`);
 
 	client.close();
+
+	// 6b. 排查开关:设了 DSH_SUBAGENT_DEBUG 才应该有启动横幅
+	const debugClient = new Client(process.execPath, [MCP_ENTRY], { DSH_SUBAGENT_DEBUG: '1', DSH_SUBAGENT_AUTOSTART_MONITOR: 'off' });
+	await debugClient.request('initialize', {
+		protocolVersion: '2025-06-18',
+		capabilities: { roots: { listChanged: true } },
+		clientInfo: { name: 'dsh-subagent-selftest-debug', version: '0.0.1' },
+	});
+	check('DSH_SUBAGENT_DEBUG=1 时才有启动横幅(且带正确版本)',
+		debugClient.stderrText.includes('MCP stdio server ready') && debugClient.stderrText.includes(manifestVersion),
+		JSON.stringify(debugClient.stderrText.trim().slice(0, 120)));
+	debugClient.close();
 
 	// 7. 落盘审计
 	const report = { workspace, at: new Date().toISOString(), results };

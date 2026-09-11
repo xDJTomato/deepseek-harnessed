@@ -2,6 +2,31 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/);日期为本地实测日期。
 
+## [0.1.2] — 2026-09-11
+
+### 修复
+
+- **MCP 连接不再让 harness 报 warning**。原先 server 启动会往 stderr 打一行纯信息横幅,
+  而 harness 把 MCP 子进程的 stderr **一律渲染成 warning/error** —— Cursor 的 `mcpprocess.log`
+  里就是 `[warning] [McpProcess stderr]   ERR dsh-subagent: MCP stdio server ready …`。
+  现在**正常路径下 stderr 一个字都不写**,stderr 只留给真的出问题(如进程树探测不可用的
+  降级告警);排查时设 `DSH_SUBAGENT_DEBUG=1` 即恢复横幅与调试行。
+- **版本号只有一个来源**:`SERVER_VERSION` 原先硬编码 `0.2.0`,与 `package.json`(`0.1.1`)
+  各自漂移,用户看到的横幅版本和仓库对不上。现在直接读 `package.json`。
+
+### 文档
+
+- README 精简:删掉与**特定机器环境**强绑定的说明,相关设计理由改为环境无关表述
+  (例如"判进度只看字节数、不依赖 mtime"保留,"本机为什么 mtime 不可靠"不再展开)。
+- README 新增常见问题条目解释上面那个 warning,并在验收记录里补了对应实测行。
+- README 章节重新编号(§1~§10),全部交叉引用同步。
+
+### 测试
+
+- `test/selftest.mjs` 新增 3 项:`serverInfo.version 与 package.json 一致`、
+  `正常启动不往 stderr 写任何东西`、`DSH_SUBAGENT_DEBUG=1 时才有启动横幅`。
+- 全套 **275/275**(panel 117、selftest 54、observer 34、autostart 27、ledger 21、leaf 14、monitor-live 8)。
+
 ## [0.1.1] — 2026-09-11
 
 **适配 DSH 0.1.5-rc.1**。升级当场打坏了整个桥接层(协议级自检 43/51:`dsh_task` 1.5 秒即失败、
@@ -86,4 +111,4 @@
 - `install.mjs` 一条命令装配全部:**幂等**、**先备份**、**永不覆盖解析失败的 JSON 配置**,
   支持 `--dry-run` 与 `--only profile,observer,panel,cursor,…`。
 - `uninstall.mjs` 按受管标记精确摘除。
-- 离线自检套件(272 项)全部可用 `node test\*.mjs` 复跑,含真实多帧 zstd 日志与真进程判活。
+- 离线自检套件(273 项)全部可用 `node test\*.mjs` 复跑,含真实多帧 zstd 日志与真进程判活。

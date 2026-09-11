@@ -23,7 +23,7 @@ Gemini CLI / Antigravity / Kiro / Qoder / VS Code(Copilot)/ opencode** 调用的
 | **[docs/configuration.md](docs/configuration.md)** | 全部环境变量(逐条来自源码)、profile 逐行解释、权限与叶子闸门、卡片偏好 |
 | **[docs/clients.md](docs/clients.md)** | 每个客户端的注册位置与 JSON 形状、手工接入、让内置 subagent 转调 DSH |
 
-本文件往下是**完整设计与实测记录**(§1~§11),含每一条踩过的坑与真实测量数据。
+本文件往下是**完整设计与实测记录**(§1~§10),含每一条踩过的坑与真实测量数据。
 
 ---
 
@@ -225,7 +225,7 @@ node $env:USERPROFILE\.dsh\subagent\test\usage-fold-probe.mjs --all
 | `dsh_task_kill` / `dsh_task_cancel.description` | 两种模式(按 `job_id` / 按 `caller`)与"什么时候该止损(任务跑偏、deadline 将近仍无进展)" |
 | `dsh_health.description` | `liveTasks` / `activeByCaller` / 看门狗阈值 / `monitorHost` 各字段含义与三种使用场景 |
 
-自检会核对这套文案真的出现在 schema 里(见 §11 的 `initialize 带委派操作手册`、
+自检会核对这套文案真的出现在 schema 里(见 §10 的 `initialize 带委派操作手册`、
 `dsh_task 描述含完整委派约定` 等条目),避免以后被人无声改掉。
 
 ---
@@ -253,7 +253,7 @@ node $env:USERPROFILE\.dsh\subagent\test\usage-fold-probe.mjs --all
 | 所有 harness 的 shell 路径 | `~/.local/bin/dsh-subagent.cmd`、`dsh-subagent-mcp.cmd` | 命令行入口 |
 | DSH 本体 | `$DSH_HOME/profiles/subagent/` | 一次性 subagent profile |
 | **DSH Desktop(GUI 宿主)** | `$DSH_HOME/profiles/desktop/cordis.patch.yml` | 两块受管 insert:`>>> dsh-subagent-observer >>>`(会话列表实时监控)与 `>>> dsh-subagent-panel >>>`(右上角悬浮卡片) |
-| **DSH Desktop(GUI 宿主)** | `$DSH_HOME/subagent/monitor/observer.mjs`、`$DSH_HOME/subagent/gui/**` | 上面两块 insert 指向的插件本体(§7.4 / §7.5) |
+| **DSH Desktop(GUI 宿主)** | `$DSH_HOME/subagent/monitor/observer.mjs`、`$DSH_HOME/subagent/gui/**` | 上面两块 insert 指向的插件本体(§6.4 / §6.5) |
 
 所有写入都是**幂等**的,并且会先备份为 `<原文件>.bak-dshsubagent-<时间戳>`;
 JSON 配置若解析失败则**跳过不写**,绝不覆盖用户配置。
@@ -288,7 +288,7 @@ subagent-runner.js    一次性 runner:跑一轮 → 写 result.txt / meta.json 
 3. 关掉 LLM 起标题(省一次模型调用);
 4. 审批策略固定 `never` —— 子代理是非交互进程,没有人能点「同意」;
 5. 沙箱模式由 `DSH_SUBAGENT_PERMISSION` 控制,默认 `danger-full-access`;
-6. 显式声明「无人值守」权限预设表(否则 `--permission workspace-write` 会崩,见 §6);
+6. 显式声明「无人值守」权限预设表(否则 `--permission workspace-write` 会崩,见 §5);
 7. **叶子闸门:外部任务不允许再分叉**(见下)。
 
 ### 4.1 叶子闸门(外部任务不许派子代理)
@@ -336,18 +336,18 @@ type task.md | dsh --profile subagent --prompt-stdin
 
 ---
 
-## 6. 权限与安全
+## 5. 权限与安全
 
 | 关注点 | 现状 |
 | --- | --- |
 | 默认权限 | `danger-full-access`(与宿主 harness 本身的权限一致,且 DSH 自身会话也是这个档位) |
 | 收紧方式 | 工具参数 `permission: "workspace-write"` / `"read-only"`,或环境变量 `DSH_SUBAGENT_PERMISSION` |
 | 审批 | 子代理进程内一律 `never`:没有人类可点确认,越权由**沙箱直接拒绝**(而不是挂起等审批) |
-| 并发 | 每个 MCP server 进程默认最多 4 个并行 DSH 实例;超出者排队。详见 §7.1 |
+| 并发 | 每个 MCP server 进程默认最多 4 个并行 DSH 实例;超出者排队。详见 §6.1 |
 | 审计 | 每次委托落盘:`$DSH_HOME/subagent/state/tasks/<job-id>/{prompt.md,result.txt,meta.json,stderr.log,task.json}`;会话本身也按 DSH 常规落盘,可在 DSH GUI 对应工作空间下复查 |
 | 遥测 | 沿用 DSH 自身设置;如需关闭,给调用方环境加 `DSH_TELEMETRY_DISABLED=1` |
 
-**权限档位怎么"真的生效"**(这一块踩过两个坑,2026-09-11 修复,见 §9 第 1、2 条):
+**权限档位怎么"真的生效"**(这一块踩过两个坑,2026-09-11 修复,见 §8 第 1、2 条):
 
 1. profile 里显式声明了一张"无人值守"预设表(三种沙箱模式 × `approval: never`)。DSH 自带的
    表把 `workspace-write` / `read-only` 配成 `approval: ask`,与无人值守的 `never` 组合不出任何
@@ -370,9 +370,9 @@ type task.md | dsh --profile subagent --prompt-stdin
 
 ---
 
-## 7. 并发(多开)与在 GUI 里查看
+## 6. 并发(多开)与在 GUI 里查看
 
-### 7.1 能不能多开
+### 6.1 能不能多开
 
 能。同一时刻可以有多个 DSH 实例在跑,机制是:
 
@@ -397,7 +397,7 @@ type task.md | dsh --profile subagent --prompt-stdin
   运行中任务("停掉我起的全部东西")。排队中的任务会被立即落终态,跑着的直接杀整个进程树。
   注意 `caller` 模式的作用域是**当前 MCP server 进程**——每个 harness 一个进程,跨进程请分别调用。
 
-### 7.2 硬截止与停滞看门狗(防止无限挂住)
+### 6.2 硬截止与停滞看门狗(防止无限挂住)
 
 | 机制 | 触发条件 | 结果 |
 | --- | --- | --- |
@@ -448,14 +448,14 @@ CPU 相对增量被钉在 0 以下不取(避免出现负增量这种噪声)。
   **`status:"ok"`** —— 真挂起被漏判(探针因此退出码 1)。
   命令:`DSH_SUBAGENT_WATCHDOG_INTERVAL=10 DSH_SUBAGENT_STALL_PROBES=2 DSH_SUBAGENT_STALL_MIN_SECONDS=60
   DSH_SUBAGENT_STALL_CPU_MS=200`(且**不设** `..._CPU_WORK_FLOOR_MS`)跑同一个探针;
-  加上下限(默认 1500)后同一条路径判 `stalled`(见 §11)。
+  加上下限(默认 1500)后同一条路径判 `stalled`(见 §10)。
 - 要更快发现挂死:`DSH_SUBAGENT_WATCHDOG_INTERVAL=5` + `DSH_SUBAGENT_STALL_MIN_SECONDS=10`;
   `DSH_SUBAGENT_WATCHDOG=off` 可整体关掉看门狗。
 - 仍存在的误杀风险:一个**整棵树真静止**超过窗口的任务(例如子代理卡在一个 CPU 睡眠、
   又没有后代进程的动作上)会被判 `stalled`。这正是需求要的行为,但请按上面的方式用
   `expected_seconds` 兜住正常的长任务。
 
-### 7.3 会话在 DSH GUI(本窗口)里看得见吗
+### 6.3 会话在 DSH GUI(本窗口)里看得见吗
 
 **看得见,但不是"实时看板"那种看得见。** 事实依据:
 
@@ -485,9 +485,9 @@ Get-Content $env:USERPROFILE\.dsh\subagent\state\tasks\<job-id>\task.json
 
 > ⚠️ **只对"已经结束"的会话点开。** 在 GUI 里打开一个**仍在运行**的外部会话不是只读操作:
 > 宿主会 resume 它、接管写权,并把合成的收尾事件写进子进程正在写的日志(实测已把 5 个会话
-> 写坏,出现重复 seq)。详见 §7.6;悬浮卡片(§7.5)已经按这个结论做了防护。
+> 写坏,出现重复 seq)。详见 §6.6;悬浮卡片(§6.5)已经按这个结论做了防护。
 
-### 7.4 GUI 实时监控(observer 插件,已装好)
+### 6.4 GUI 实时监控(observer 插件,已装好)
 
 上面 7.2 说的"没有跑马灯、要刷新才出现"已经解决:本机在 **GUI 宿主进程**里装了一个
 观察器插件 `~/.dsh/subagent/monitor/observer.mjs`,它把外部 subagent 任务投射成 GUI
@@ -496,11 +496,11 @@ Get-Content $env:USERPROFILE\.dsh\subagent\state\tasks\<job-id>\task.json
 | 时机 | 你在 GUI 里看到 |
 | --- | --- |
 | 任务开始 ~2 秒内 | 该会话**自动出现在侧边栏**(归到它的工作空间那一组),**带"运行中"标记** |
-| 运行中 | 会话被持续顶到列表最前;标题是 `⚡ <调用方> · <标题> ⚠运行中·勿点开`(最后一句是**刻意的护栏**,原因见 §7.6),并带上调用方/任务号/截止时间等投影(§7.5 的卡片就用这些) |
+| 运行中 | 会话被持续顶到列表最前;标题是 `⚡ <调用方> · <标题> ⚠运行中·勿点开`(最后一句是**刻意的护栏**,原因见 §6.6),并带上调用方/任务号/截止时间等投影(§6.5 的卡片就用这些) |
 | 任务结束 | 运行中标记自动消失,会话留在列表里,**这时点开**内容完整可复查 |
 
 > 观察器本身是安全的:标 `running` 与 `activity` 都只影响客户端列表(`running` 不会让宿主
-> attach,`activity` 只重排列表),不读也不写会话文件。**危险的是"点开"**(§7.6)。
+> attach,`activity` 只重排列表),不读也不写会话文件。**危险的是"点开"**(§6.6)。
 
 **原理**(都是宿主插件,不改前端、不改 DSH 源码):
 
@@ -545,7 +545,7 @@ Claude Code / Codex 派活"这件事本身就能激活监控窗口,**哪怕你�
 
 判活协议与决策顺序(`dsh_task` 里**非阻塞**完成,失败绝不影响任务)。**判活绝不只看心跳** ——
 心跳文件只有在 DSH Desktop 重启后才会被写(观察器是宿主进程内的插件,内存里跑的是启动时加载的那份
-代码),而且它会被自检写成"pid 早已死掉"的残留文件。只看心跳就会拉起第二个宿主,踩中 §7.6:
+代码),而且它会被自检写成"pid 早已死掉"的残留文件。只看心跳就会拉起第二个宿主,踩中 §6.6:
 
 | 顺序 | 条件 | 动作 |
 | --- | --- | --- |
@@ -602,8 +602,8 @@ node $env:USERPROFILE\.dsh\subagent\test\monitor-autostart-probe.mjs   # 26 项:
 `DSH_SUBAGENT_OBSERVER_DEBUG=1`(每轮都写日志)。
 
 **已知边界**:GUI 显示的是"会话 + 运行状态"。远程事件里没有逐字增量,所以**不打开会话时
-不会实时滚字**;而且**运行中的外部会话不应该打开**(§7.6)。要看实时的推理流,用悬浮卡片
-的实时详情页(§7.5,它读任务现场的 `stderr.log`),或者 `Get-Content -Wait …\stderr.log`。
+不会实时滚字**;而且**运行中的外部会话不应该打开**(§6.6)。要看实时的推理流,用悬浮卡片
+的实时详情页(§6.5,它读任务现场的 `stderr.log`),或者 `Get-Content -Wait …\stderr.log`。
 
 自检:
 
@@ -612,7 +612,7 @@ node $env:USERPROFILE\.dsh\subagent\test\observer-selftest.mjs   # 34 项,含投
 node $env:USERPROFILE\.dsh\subagent\test\live-audit.mjs          # 现场审计:真的在跑几个 / 幽灵几个 / 宿主状态
 ```
 
-### 7.5 悬浮卡片 Subagent(独立的实时视图,已装好)
+### 6.5 悬浮卡片 Subagent(独立的实时视图,已装好)
 
 侧边栏里外部任务和普通会话混在一起,不适合当"看板"。所以另装了一个**独立的客户端插件**
 `dsh-subagent-panel`,在窗口右上角渲染一张**悬浮卡片**,和其他会话在观感上分开:
@@ -768,7 +768,7 @@ dsh --patch $env:USERPROFILE\.dsh\subagent\gui\test-overlay.yml --profile web --
 node $env:USERPROFILE\.dsh\subagent\test\gui-graph-probe.mjs "http://127.0.0.1:34199/?token=<上面打印的 token>"
 ```
 
-### 7.6 ⚠️ 为什么"运行中的外部会话"不能直接打开
+### 6.6 ⚠️ 为什么"运行中的外部会话"不能直接打开
 
 这是本机实测出来的**破坏性**行为,不是猜测。
 
@@ -809,7 +809,7 @@ node $env:USERPROFILE\.dsh\subagent\test\gui-graph-probe.mjs "http://127.0.0.1:3
 
 ---
 
-### 7.7 本机 `subagent` 与外部 `dsh_task` 是两扇门(为什么两个都要)
+### 6.7 本机 `subagent` 与外部 `dsh_task` 是两扇门(为什么两个都要)
 
 经常会被问:"DSH 自己就有 subagent,为什么还搞一个 `dsh_task`?" —— 因为调用方在**两个不同的世界**里:
 
@@ -832,10 +832,10 @@ DSH 自己内部派活时用的仍然是它自己的 `subagent`(这也是为什�
 另外卡片对"报告还有下一层"的子代理会**主动拉一次目录**(`ctx.sessions.refreshSubagents`),
 所以递归链不用你先点开宿主的子代理面板才会显形。
 
-> 注意:本机子代理是**同进程**的,宿主自己的入口就是直接打开,所以卡片对它们**不做**§7.6 的
+> 注意:本机子代理是**同进程**的,宿主自己的入口就是直接打开,所以卡片对它们**不做**§6.6 的
 > 「运行中勿点开」限制 —— 那条限制只针对进程外的 `dsh_task` 会话。
 
-### 7.8 台账里的"幽灵记录":状态一律按 pid 判活
+### 6.8 台账里的"幽灵记录":状态一律按 pid 判活
 
 `state/tasks` 是**跨桥接进程共享**的目录,而"写终态"这件事只有**起它的那个桥接进程**会做。
 桥接进程被杀 / 退出时,它正在跑的任务**永远不会有人去改 `status`** —— 于是台账里留下
@@ -885,7 +885,7 @@ node $env:USERPROFILE\.dsh\subagent\test\ledger-liveness-probe.mjs   # 20 项:�
 
 ---
 
-## 8. 环境变量一览
+## 7. 环境变量一览
 
 | 变量 | 默认值 | 作用 |
 | --- | --- | --- |
@@ -896,12 +896,12 @@ node $env:USERPROFILE\.dsh\subagent\test\ledger-liveness-probe.mjs   # 20 项:�
 | `DSH_SUBAGENT_STALL_PROBES` | `2` | 静默窗口内**连续**多少次"所有信号零变化"才判停滞 |
 | `DSH_SUBAGENT_STALL_MIN_SECONDS` | `180` | 判定停滞前的最小静默秒数(防"慢模型响应"被误杀) |
 | `DSH_SUBAGENT_STALL_CPU_MS` | `200` | 树累计 CPU 增长多少毫秒才算"有进展"(小增量会累加) |
-| `DSH_SUBAGENT_STALL_CPU_WORK_FLOOR_MS` | `1500` | 窗口内树 CPU 累计增长低于此值时**不算"在干活"**:把 IO/定时器空转噪声与真正的工作区分开(见 §7.2) |
+| `DSH_SUBAGENT_STALL_CPU_WORK_FLOOR_MS` | `1500` | 窗口内树 CPU 累计增长低于此值时**不算"在干活"**:把 IO/定时器空转噪声与真正的工作区分开(见 §6.2) |
 | `DSH_SUBAGENT_WATCHDOG` | 未设置 | 设为 `off` 可整体关闭停滞看门狗 |
 | `DSH_SUBAGENT_TREE_PROBE_TIMEOUT_MS` | `15000` | 单次进程快照的 `Get-CimInstance` 超时 |
 | `DSH_SUBAGENT_PS` | 系统 PowerShell | 覆盖进程快照所用的 powershell.exe 路径 |
 | `DSH_SUBAGENT_MAX_CONCURRENCY` | `4` | 单个 MCP server 进程的并发上限 |
-| `DSH_SUBAGENT_AUTOSTART_MONITOR` | 未设置(开) | 设为 `off`/`0`/`false` 关闭"调 `dsh_task` 时自动拉起监控窗口"(见 §7.4) |
+| `DSH_SUBAGENT_AUTOSTART_MONITOR` | 未设置(开) | 设为 `off`/`0`/`false` 关闭"调 `dsh_task` 时自动拉起监控窗口"(见 §6.4) |
 | `DSH_SUBAGENT_MONITOR_COOLDOWN_MS` | `60000` | 两次自动拉起之间的最小间隔,防抖(也用作进程表探测的缓存窗口) |
 | `DSH_SUBAGENT_MONITOR_HEARTBEAT_MS` | `20000` | 心跳多旧算"没有宿主在跑" |
 | `DSH_SUBAGENT_MONITOR_HOST_CHECK` | 未设置(开) | 设为 `off` 关掉"已有 GUI 宿主进程就跳过"的闸门(**测试逃生门**) |
@@ -915,7 +915,7 @@ node $env:USERPROFILE\.dsh\subagent\test\ledger-liveness-probe.mjs   # 20 项:�
 | `DSH_SUBAGENT_ACTIVITY_CLIP` | `1800` | 活动流(`recent_activity`)回传上限 |
 | `DSH_SUBAGENT_OBSERVER_USAGE_REFRESH_MS` | `5000` | 同一会话的日志最多多久重新折叠一次(折叠一次 ~33ms) |
 | `DSH_SUBAGENT_OBSERVER_ACTIVITY_MS` | `5000` | 进度字节/用量变化触发提前重播的最小间隔 |
-| `DSH_SUBAGENT_OBSERVER_RATE_MIN_MS` | `3000` | 算吞吐(`tok/s`)的最小采样跨度;**低于它的窗口不算**(见 §7.5.2) |
+| `DSH_SUBAGENT_OBSERVER_RATE_MIN_MS` | `3000` | 算吞吐(`tok/s`)的最小采样跨度;**低于它的窗口不算**(见 §6.5.2) |
 | `DSH_SUBAGENT_OBSERVER_RATE_SAMPLES` | `4` | 吞吐取最近几次采样的平均(≈20~40 秒窗口) |
 
 CLI 另有两个参数:`--expected-seconds <n>`(默认取外层上限的一半)、`--acceptance <text>`、
@@ -923,18 +923,18 @@ CLI 另有两个参数:`--expected-seconds <n>`(默认取外层上限的一半)�
 
 ---
 
-## 9. 常见问题
+## 8. 常见问题
 
 **Q:传了 `permission: "workspace-write"`,任务 2 秒就失败(退出码 1),堆栈里是
 `permission: composed sandbox and approval defaults match no preset`?**
-已经修好了(2026-09-11),原因与修法见 §6 第 1 条。要点:DSH 自带预设表把
+已经修好了(2026-09-11),原因与修法见 §5 第 1 条。要点:DSH 自带预设表把
 `workspace-write`/`read-only` 配成 `approval: ask`,而无人值守的子代理固定 `never`,
 组合不出表项 → 预设服务在**构造期**抛错 → 插件树加载失败 → agent 还没起就退出。
 现在 profile 显式声明了"三种模式 × never"的表,三个档位都能跑。
 (注意:修复前 `read-only` 同样是坏的,只是没人试过。)
 
 **Q:`--permission workspace-write` 能跑,但子代理照样写到了工作区外面?**
-也是已修的坑(§6 第 2 条):权限预设值存在**全局** `$DSH_HOME/settings.yaml`(GUI 里选的
+也是已修的坑(§5 第 2 条):权限预设值存在**全局** `$DSH_HOME/settings.yaml`(GUI 里选的
 档位),会盖掉 profile 的 `config.defaultPreset`;而工具层是**按会话事件**解析沙箱策略的。
 现在 runner 会在发提示词前把档位写进本次会话事件,并用
 `node test/session-perm-probe.mjs <sessionId>` 可以验证会话里到底落的是哪一档。
@@ -948,17 +948,32 @@ CLI 另有两个参数:`--expected-seconds <n>`(默认取外层上限的一半)�
 `ok`/`error`/`deadline`/`stalled`/`cancelled`/`killed`。状态里会带 `recent_activity`(子代理此刻
 在干什么)与 `progress_bytes`;任务的 `prompt.md`、`stderr.log` 也实时落盘,想看原始进度直接看文件。
 
+**Q:Cursor / Claude Code 里这个 MCP server 显示一个 warning?**
+
+harness 会把 MCP **子进程的 stderr 一律渲染成 warning/error**,所以哪怕我们只打一行
+"启动成功"的信息,你在 Cursor 里也会看到告警。实测 Cursor 的 `mcpprocess.log`:
+
+```
+[warning] [McpProcess stderr]   ERR dsh-subagent: MCP stdio server ready (bridge v…)
+```
+
+因此现在的约定是:**正常路径下 stderr 一个字都不写**,stderr 只留给"真的出问题"
+(例如进程树探测不可用的降级告警)。要排查就把 `DSH_SUBAGENT_DEBUG` 设成 `1`,
+启动横幅与调试行会重新出现。自检里钉了这条(`正常启动不往 stderr 写任何东西`),
+以后不会退化。
+
 **Q:结果为空?**
 看 `meta.json` 的 `stopReason` 与 `error`,以及 `stderr.log` 末尾。`DSH 进程退出码 N`
 一般是模型/凭据问题。
 
 **Q:子代理回答"文件是二进制/乱码"?**
-先确认那个文件是谁写的、能不能被别的进程按原文读到,再怀疑模型。别把这类现象当成模型幻觉。
+先确认那个文件是谁写的、能不能被别的进程按原文读到(node/npm 现场生成的中间文件在某些
+安全软件环境下可能被改写),再怀疑模型。别把这类现象当成模型幻觉。
 
 **Q:任务太长被掐断?**
 先看是哪种掐断:`status: deadline` 说明 `expected_seconds` 估小了(或宽限系数太小),
 估准了重派、或把任务拆小;`status: timeout` 才是外层 `timeout_seconds`(默认 1800)到了;
-`status: stalled` 是看门狗判定"连续无产出",见 §7.2。宿主 harness 自己的 MCP 工具超时
+`status: stalled` 是看门狗判定"连续无产出",见 §6.2。宿主 harness 自己的 MCP 工具超时
 (Claude Code 的 `MCP_TOOL_TIMEOUT` 等)也要相应放大。
 
 **Q:怎么换模型?**
@@ -973,12 +988,12 @@ CLI 另有两个参数:`--expected-seconds <n>`(默认取外层上限的一半)�
 
 **Q:我的子代理还没跑完,但这一轮已经答完了,它们去哪了?**
 DSH 父会话回答完**不会**杀掉子代理(杀了等于丢工作),它们会继续跑完并写回结果。所以看的地方是
-悬浮卡片(§7.5):「本机 DSH 子代理 ✦」那一组按 `L1/L2/L3` 列出宿主自己的子代理树,
+悬浮卡片(§6.5):「本机 DSH 子代理 ✦」那一组按 `L1/L2/L3` 列出宿主自己的子代理树,
 `⊞` 表示"它自己也叫了子代理",运行中的会亮着 —— 不用再靠"翻侧边栏找会话"。
 
 ---
 
-## 10. 目录速查
+## 9. 目录速查
 
 ```
 ~/.dsh/subagent/
@@ -996,7 +1011,7 @@ DSH 父会话回答完**不会**杀掉子代理(杀了等于丢工作),它们会
 │   ├── dsh-subagent.mjs      CLI:任何 harness 都能 shell 调用
 │   └── dsh-subagent-mcp.mjs  MCP server 入口
 ├── test/
-│   ├── selftest.mjs          协议级端到端自检(51 项)
+│   ├── selftest.mjs          协议级端到端自检(54 项)
 │   ├── monitor-autostart-probe.mjs 监控窗口自动拉起自检(27 项,假 exe + 临时 DSH_HOME)
 │   ├── ledger-liveness-probe.mjs   台账幽灵记录自检(21 项,临时 DSH_HOME 造假台账)
 │   ├── e2e-harness.mjs       验收脚本:让每个 harness 自己委托一次并核对产物
@@ -1019,7 +1034,7 @@ DSH 父会话回答完**不会**杀掉子代理(杀了等于丢工作),它们会
 
 ---
 
-## 11. 验收记录(本机实测)
+## 10. 验收记录(本机实测)
 
 一键复跑: `node test/e2e-harness.mjs <工作空间>`(会依次驱动 Claude Code / Codex /
 Cursor 各委托一次,并核对 DSH 是否真的按内容要求写出了文件)。
@@ -1034,12 +1049,12 @@ Cursor 各委托一次,并核对 DSH 是否真的按内容要求写出了文件)
 | Cursor → `mcp__dsh__dsh_task` | `cursor-agent -p --force --approve-mcps` | ✅ 6.0s,产物 `e2e-cursor-*.txt` |
 | 命令行 | `dsh-subagent -w <dir> "…"` / `--json` | ✅ 5.5s,stdout 就是 DSH 答复 |
 | 直接调用 DSH profile | `dsh --profile subagent --prompt-stdin` | ✅ 1.2s,退出码 0 |
-| 协议级自检 | `node test/selftest.mjs` | ✅ 51/51(含 caller / `expected_seconds` 必填且 `isError:true` / 强杀 / 幽灵 `stale` 回报 / `initialize.instructions` / 工具定义文案 / `monitor_host` 接线) |
+| 协议级自检 | `node test/selftest.mjs` | ✅ 54/54(含 caller / `expected_seconds` 必填且 `isError:true` / 强杀 / 幽灵 `stale` 回报 / `initialize.instructions` / 工具定义文案 / `monitor_host` 接线 / **stderr 必须安静** / 版本号与 package.json 一致 / `DSH_SUBAGENT_DEBUG` 才出横幅) |
 | 并发 | `node test/concurrency-probe.mjs <ws> 3` | ✅ 3 路并行 14.6s 全成功;取消 ✅ |
 | 硬截止 | `expected_seconds=10`,任务是静默 300s | ✅ `status: "deadline"`,`error: 超出预估时间 10s × grace 1.5 仍未完成,已终止`,pid 已消失 |
 | 停滞看门狗(真挂起) | 进程树**完全静止**(根进程阻塞在 `waitpid`):外部单独杀掉 sleep 子进程 → 字节不涨、后代不变、树 CPU 不涨 | ✅ 判 `status: "stalled"`,落 `treePids` / `treeCpuMs` / `signalState` 取证 |
 | 停滞看门狗(真挂起·六进程树) | `powershell → bash → bash → node hang.mjs → node(600s sleep)`,日志 4823B **冻结 122 秒**、树 CPU 每轮仍有 15~220ms 空转噪声 | ✅ 判 `status: "stalled"`(`silentProbes: 2`、`silenceSeconds: 73`、`treeCpuMs: 1078`),靠"窗口内 CPU 强度下限"把空转噪声与真干活区分开 |
-| 停滞看门狗(对照:关掉 CPU 强度下限) | 同一棵树,`stderr` 自 +24s 起冻在 1439B **连续约 590 秒零增长**(整轮 612s),`cpuDeltaMs` 每轮 0~188ms | ❌ **漏判** —— `progressed` 每 3 轮被"树 CPU 累计 +2xx ms"翻成 true、`stalledProbes` 在 0~4 之间反复归零(一次都没到阈值),最终 `status:"ok"`(退出码 1)。这就是加上下限的原因;详见 §7.2 |
+| 停滞看门狗(对照:关掉 CPU 强度下限) | 同一棵树,`stderr` 自 +24s 起冻在 1439B **连续约 590 秒零增长**(整轮 612s),`cpuDeltaMs` 每轮 0~188ms | ❌ **漏判** —— `progressed` 每 3 轮被"树 CPU 累计 +2xx ms"翻成 true、`stalledProbes` 在 0~4 之间反复归零(一次都没到阈值),最终 `status:"ok"`(退出码 1)。这就是加上下限的原因;详见 §6.2 |
 | 停滞看门狗(反例不误杀) | 长时间不出字但**在真干活**(连续 30 次 `Start-Sleep 2`,后代进程活着、树 CPU 持续增长),间隔 10s / 2 次 | ✅ 未被杀,`stalledProbes` 反复归零,最终 `status: ok`,CPU 信号是保住它的原因 |
 | 监控窗口自动拉起 | `node test/monitor-autostart-probe.mjs` | ✅ 27/27:心跳新鲜**且 pid 存活**→`already-running` 不 spawn;心跳新鲜**但 pid 已死**(残留)→不判已有宿主、继续判并拉起;心跳缺失→`launched` 且标记文件出现;总开关 off→`skipped`;**"GUI 宿主进程在但跑旧观察器"→`gui-open-old-observer` 不 spawn**;真实 `--expose-internals` 进程→分类 `dsh-cli` 不算宿主;`FORCE=1`→`launched`;分类规则 4 条纯函数单测 |
 | 监控窗口自动拉起(全链路) | 真 MCP server + 真 `dsh_task`(假 exe + `HOST_CHECK=off`) | ✅ 结果里 `monitor_host: launched(心跳缺失/过期)`、标记文件出现、`monitor-host.log` 记 `reason=dsh_task <job_id>`、任务本身 `status: ok` |
@@ -1053,12 +1068,13 @@ Cursor 各委托一次,并核对 DSH 是否真的按内容要求写出了文件)
 | 台账幽灵记录(本机真实数据) | `dsh-subagent --list` | ✅ 134 条记录:`--list` 每条都带 `stale`/`pidAlive`/`derived`,不再有"号称在跑"的幽灵(对方已用 `live-audit --fix` 把 5 条纠正为 `lost`) |
 | 强制终止 | `dsh_task_kill {caller}` | ✅ 一次杀掉该 caller 的 2 个运行中任务;已结束的重杀报"无需终止" |
 | 注册可见性 | `claude mcp list` / `codex mcp list` | ✅ `dsh` 均显示 Connected / enabled |
-| GUI 可见性 | 会话落在一个按工作区路径编码出来的目录里 | ✅ 执行中文件持续增长(38KB→89KB/25s);GUI 列表可见,但无「执行中」徽标 |
+| GUI 可见性 | 会话落在一个按工作区路径编码出来的目录里(如 §6.3 那种 `--D-work-demo--`) | ✅ 执行中文件持续增长(38KB→89KB/25s);GUI 列表可见,但无「执行中」徽标 |
 | **DSH 升级到 0.1.5-rc.1 后回归** | 全套 7 个探针 | ⚠️ 升级当场打坏:`selftest` **43/51**、`leaf-only-probe` 14/15、`monitor-live-probe` 7/8(详见「DSH 版本兼容性」) |
-| 同上,修复后 | 全套 7 个探针 | ✅ **272/272**:panel 117、selftest 51、observer 34、autostart 27、ledger 21、leaf 14、monitor-live 8 |
+| 同上,修复后 | 全套 7 个探针 | ✅ **275/275**:panel 117、selftest 54、observer 34、autostart 27、ledger 21、leaf 14、monitor-live 8 |
 | 新版真跑一轮(MCP 桥接层) | `node test/monitor-live-probe.mjs` 内的真 `dsh_task` | ✅ `status=ok` 4.9s,产物落盘,观察器记到 `running=true job=20260911-124736-5c6cbc3c` |
 | 新版直接调 profile | `dsh --profile subagent --prompt "…"` | ✅ `stopReason: completed`,答复「好的」,1.2s |
 | 新版 row id 兼容审计 | 对 `app.asar` 逐个查 12 个被 patch 的行 id | ✅ 12/12 仍存在;新发现 `tool-subagent-report` 不再是 loader 行(变成协议消息 kind),探针已同步 |
 | 新版客户端接入点审计 | 临时 web 实例上取组合 bundle(11.2MB) | ✅ 6/6 仍在:`shell.overlay` / `subagentsByParent` / `projectionValues` / `sessions.open` / `useSessions` / `__ModuleLoader__`;启动图 10/10,卡片 rev `36bac599d008e66e-45` |
 | 上游 lsp 缺陷影响面 | `desktop` profile `--dump-config` + 宿主日志 | ✅ 桌面宿主**不受影响**(没有 `lsp-stdio`/`tool-lsp` 这两行,日志无 `assertNever`);只有 `web` 这类 profile 起不来,已给出两行 overlay 的绕开办法 |
+| MCP 连接不再产生 warning | 手工握手 + 读 Cursor `mcpprocess.log` | ✅ server 正常启动 **stderr 0 字节**;原先 `[warning] [McpProcess stderr] ERR dsh-subagent: MCP stdio server ready …` 不再出现;`DSH_SUBAGENT_DEBUG=1` 时横幅与正确版本号(来自 `package.json`)才出现 |
 
