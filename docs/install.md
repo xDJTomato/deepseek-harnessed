@@ -81,7 +81,7 @@ node test\selftest.mjs
 ### 完整自检套件(改过代码后再跑)
 
 ```powershell
-npm run test:all                      # 上面 8 个探针一次跑完(287 项)
+npm run test:all                      # 上面 8 个探针一次跑完(284 项)
 ```
 
 或逐个跑:

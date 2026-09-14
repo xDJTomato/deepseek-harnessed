@@ -230,6 +230,28 @@ node $env:USERPROFILE\.dsh\subagent\test\usage-fold-probe.mjs --all
 
 ---
 
+### 2.2 停止语义:调用方停这一轮,子代理这边也停
+
+在 Cursor / Claude Code 里按"停止本轮",harness 会发 MCP 的 `notifications/cancelled`。
+桥接层**真的会停**对应任务。旧实现是直接忽略这个通知(注释写着"留给任务自己按 timeout 收尾"),
+后果是:调用方那边已经停了,这边的 `dsh` 实例还在后台继续跑、继续烧 token,还往工作区里
+写文件 —— 看起来像"幽灵改动"。
+
+| 调用方做了什么 | 桥接层的动作 |
+| --- | --- |
+| 取消正在等待的 `dsh_task` / `dsh_task_status` 请求 | 停掉这次请求对应的那个任务(精确,不碰别的任务) |
+| 发来取消但对不上具体请求(取消晚到了) | 只在本连接**恰好一个**任务在跑时停它(本连接 ≈ 这个 harness 窗口,别的窗口不受影响) |
+| 关掉 MCP 连接 / 关掉 harness | 停掉本连接名下所有在跑任务,然后退出 |
+| 直接杀掉 MCP 进程(`SIGTERM`/`SIGINT`) | 先停掉本进程名下所有任务,再退出 |
+
+刻意**没做**的事:不按"多久没轮询"来猜你还在不在。轮询间隔里调用方可能只是在思考,
+拿它当依据会误杀真正在跑的活。所以覆盖的是上面这四种**明确的停止信号**;
+如果客户端既不取消也不关连接,任务会一直跑到自己的 `deadline` —— 这种情况请用
+`dsh_task_cancel` / `dsh_task_kill` 主动止损。
+
+> 说明:Windows 上 `taskkill /F`(以及 host 用 `TerminateProcess`)不会给进程任何执行收尾代码的
+> 机会,所以"被强杀"那条兜不住;真正兜住的是前三种。验收记录里有实测:发取消通知后子进程确实消失。
+
 ## 3. 本机已写入的配置
 
 | Harness | 配置文件 | 写入内容 |
@@ -639,7 +661,7 @@ node $env:USERPROFILE\.dsh\subagent\test\monitor-autostart-probe.mjs   # 26 项:
 自检:
 
 ```powershell
-node $env:USERPROFILE\.dsh\subagent\test\observer-selftest.mjs   # 34 项,含投影、僵尸/半成品判活、心跳+口径版本、token 折叠、吞吐窗口
+node $env:USERPROFILE\.dsh\subagent\test\observer-selftest.mjs   # 35 项,含投影、僵尸/半成品判活、心跳+口径版本、token 折叠、吞吐窗口、0.1.5 新日志名
 node $env:USERPROFILE\.dsh\subagent\test\live-audit.mjs          # 现场审计:真的在跑几个 / 幽灵几个 / 宿主状态
 ```
 
@@ -1047,9 +1069,9 @@ DSH 父会话回答完**不会**杀掉子代理(杀了等于丢工作),它们会
 │   ├── dsh-subagent.mjs      CLI:任何 harness 都能 shell 调用
 │   └── dsh-subagent-mcp.mjs  MCP server 入口
 ├── test/
-│   ├── selftest.mjs          协议级端到端自检(54 项)
-│   ├── monitor-autostart-probe.mjs 监控窗口自动拉起自检(27 项,假 exe + 临时 DSH_HOME)
-│   ├── ledger-liveness-probe.mjs   台账幽灵记录自检(21 项,临时 DSH_HOME 造假台账)
+│   ├── selftest.mjs          协议级端到端自检(53 项)
+│   ├── monitor-autostart-probe.mjs 监控窗口自动拉起自检(26 项,假 exe + 临时 DSH_HOME)
+│   ├── ledger-liveness-probe.mjs   台账幽灵记录自检(20 项,临时 DSH_HOME 造假台账)
 │   ├── e2e-harness.mjs       验收脚本:让每个 harness 自己委托一次并核对产物
 │   ├── concurrency-probe.mjs 并发(N 路同时委托)+ 取消验证
 │   ├── tasks-probe.mjs       只验任务层的小烟测
@@ -1107,10 +1129,11 @@ Cursor 各委托一次,并核对 DSH 是否真的按内容要求写出了文件)
 | 注册可见性 | `claude mcp list` / `codex mcp list` | ✅ `dsh` 均显示 Connected / enabled |
 | GUI 可见性 | 会话落在一个按工作区路径编码出来的目录里(如 §6.3 那种 `--D-work-demo--`) | ✅ 执行中文件持续增长(38KB→89KB/25s);GUI 列表可见,但无「执行中」徽标 |
 | **DSH 升级到 0.1.5-rc.1 后回归** | 全套 7 个探针 | ⚠️ 升级当场打坏:`selftest` **43/51**、`leaf-only-probe` 14/15、`monitor-live-probe` 7/8(详见「DSH 版本兼容性」) |
-| 同上,修复后 | 全套 8 个探针 | ✅ **287/287**:panel 117、selftest 54、observer 35、autostart 27、ledger 21、leaf 14、exec-surface 11、monitor-live 8 |
+| 同上,修复后 | 全套 8 个探针 | ✅ **284/284**:panel 117、selftest 53、observer 35、autostart 26、ledger 20、leaf 14、exec-surface 11、monitor-live 8(数字取各探针**自报**值;早先写的 275/287 是把每个探针的收尾行"…通过 ✅"也数了进去,已订正) |
 | 沙箱档下 shell 空转(§5.1) | 三种权限档各派一条真任务 + 读真实会话日志的 `tool/result` | ✅ 复现:`danger-full-access` 返回 `SPAWN-PING\r\nELAPSED_MS=59\r\n`;`workspace-write` / `read-only` 返回 `"\r\n"` 且 `isError:false`(命令从未启动)。升级前后各取一份日志,行为一致 ⇒ 与 DSH 版本无关 |
 | 空转检测的准确率 | 真实会话日志跑 `detectHollowShellCalls` | ✅ 沙箱那次数出 **11** 次空转调用(带命令原文),`danger-full-access` 那次 **0** 次 ⇒ 零误报 |
 | 会话日志改名兼容 | `node test/exec-surface-probe.mjs` + `observer-selftest` | ✅ 按 `session*.jsonl.zstd` 找、取最大;新旧同名时选中新格式;观察器能从 `session.v3.jsonl.zstd` 折出用量(改名前这条会失败) |
+| 调用方停这一轮后子代理是否真停 | 真起 MCP server + 真派任务,在轮询在途时发 `notifications/cancelled` | ✅ 7/7:任务终态 `cancelled`、在途请求立刻返回、**子进程用 `process.kill(pid,0)` 探到确实消失**、连接断开后 server 自行退出 |
 | 新版真跑一轮(MCP 桥接层) | `node test/monitor-live-probe.mjs` 内的真 `dsh_task` | ✅ `status=ok` 4.9s,产物落盘,观察器记到 `running=true job=20260911-124736-5c6cbc3c` |
 | 新版直接调 profile | `dsh --profile subagent --prompt "…"` | ✅ `stopReason: completed`,答复「好的」,1.2s |
 | 新版 row id 兼容审计 | 对 `app.asar` 逐个查 12 个被 patch 的行 id | ✅ 12/12 仍存在;新发现 `tool-subagent-report` 不再是 loader 行(变成协议消息 kind),探针已同步 |

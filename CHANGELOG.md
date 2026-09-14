@@ -2,6 +2,35 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/);日期为本地实测日期。
 
+## [0.1.4] — 2026-09-14
+
+### 修复
+
+- **调用方停这一轮,子代理这边不再继续跑**(真实故障):在 Cursor / Claude Code 里按"停止本轮",
+  harness 会发 MCP 的 `notifications/cancelled`,而桥接层原先**直接忽略**它(注释写着"留给任务
+  自己按 timeout 收尾")。后果是调用方那边已经停了,这边的 `dsh` 实例还在后台继续跑、继续烧
+  token,还往工作区里写文件 —— 看起来像"幽灵改动"。现在四条明确的停止信号都会被真的执行:
+  ① 取消在途请求 ⇒ 停掉该请求对应的任务(精确);② 取消对不上具体请求 ⇒ 只在本连接恰好一个
+  任务在跑时停它;③ 连接断开(`end`/`close`)⇒ 停掉本连接名下全部任务再退出;
+  ④ `SIGINT`/`SIGTERM` ⇒ 先停掉本进程名下全部任务再退出。
+- 刻意没做"按轮询间隔猜调用方还在不在":调用方可能只是在思考,拿它当依据会误杀真正在跑的活。
+  客户端既不取消也不关连接时,任务仍会跑到自己的 `deadline`,这种情况用
+  `dsh_task_cancel` / `dsh_task_kill` 主动止损。
+
+### 新增
+
+- `test/cancel-propagation-probe.mjs`(7 项,真起 MCP server + 真派任务):在轮询请求在途时发取消
+  通知,断言任务被停、**子进程真的消失**(用 `process.kill(pid, 0)` 探,不是只看状态字段)、
+  连接断开后 server 自行退出。`npm run test:cancel`。
+- `dsh_task_status` 的工具描述里写明取消语义(只想看状态就用 `wait_seconds=0`)。
+
+### 修正
+
+- **测试项数口径**:README / CHANGELOG 里的"全套 N/N"一直是把每个探针的收尾行
+  "…通过 ✅"也数进去,普遍多算 1~2 项。现在只取各探针**自报**的通过数,当前是
+  **284/284**(panel 117、selftest 53、observer 35、autostart 26、ledger 20、leaf 14、
+  exec-surface 11、monitor-live 8),历史行也已回订正。代码与测试行为没有任何变化。
+
 ## [0.1.3] — 2026-09-14
 
 ### 新增
@@ -51,7 +80,9 @@
 
 - `test/selftest.mjs` 新增 3 项:`serverInfo.version 与 package.json 一致`、
   `正常启动不往 stderr 写任何东西`、`DSH_SUBAGENT_DEBUG=1 时才有启动横幅`。
-- 全套 **275/275**(panel 117、selftest 54、observer 34、autostart 27、ledger 21、leaf 14、monitor-live 8)。
+- 全套 **272/272**(panel 117、selftest 53、observer 34、autostart 26、ledger 20、leaf 14、monitor-live 8)。
+  注:本条原先写作 275/275,是计数口径错了(把每个探针的收尾行"…通过 ✅"也数了进去);
+  0.1.4 里改为只取各探针**自报**的通过数,并回订正了本行。
 
 ## [0.1.1] — 2026-09-11
 

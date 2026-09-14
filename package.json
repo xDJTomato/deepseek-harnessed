@@ -1,6 +1,6 @@
 {
   "name": "deepseek-harnessed",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "type": "module",
   "description": "把整个 DeepSeek Harness 实例变成 Cursor / Claude Code / Codex 等 harness 可调用的 subagent:一个 MCP 桥接层 + 一个 GUI 实时监控插件。",
@@ -45,6 +45,8 @@
     "test:ledger": "node test/ledger-liveness-probe.mjs",
     "test:monitor": "node test/monitor-autostart-probe.mjs",
     "test:leaf": "node test/leaf-only-probe.mjs",
+    "test:exec": "node test/exec-surface-probe.mjs",
+    "test:cancel": "node test/cancel-propagation-probe.mjs",
     "test:usage": "node test/usage-fold-probe.mjs --all",
     "audit": "node test/live-audit.mjs"
   }
