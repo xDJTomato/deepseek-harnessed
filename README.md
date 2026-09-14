@@ -370,6 +370,37 @@ type task.md | dsh --profile subagent --prompt-stdin
 
 ---
 
+### 5.1 ⚠️ 沙箱档下 shell 会"空转成功"(命令没跑,工具却报成功)
+
+**现象**:权限档设成 `workspace-write` 或 `read-only` 时,DSH 的 shell 工具对**任何**命令都
+返回空 —— 没有 stdout、没有 `[exit code: N]`、没有任何副作用,而且 `isError: false`。
+
+同一条 `Write-Output SPAWN-PING`,只换权限档:
+
+| 权限档 | shell 工具实际返回 |
+| --- | --- |
+| `danger-full-access` | `SPAWN-PING\r\nELAPSED_MS=59\r\n` ✅ 真的执行了 |
+| `workspace-write` / `read-only` | `"\r\n"`,`isError: false` ✗ 进程从未启动 |
+
+**排查用的对照实验**(这些排除了"只是输出丢失"这类解释):`exit 3` 不返回 `[exit code: 3]`;
+`Start-Sleep -Seconds 5` 根本不睡;`Set-Content` / `cmd /c echo > file` 不生成文件;而同一会话里
+的文件读写工具一切正常 ⇒ 故障点在**创建进程**那一层:沙箱把 spawn 吞掉了。
+
+**不是版本问题**:升级前后的真实会话日志各取一份,`tool/result` 里都是同样的
+`"\r\n"` + `isError: false`(见 §10 验收记录)。**也不是本插件配置问题**:`subagent` 与
+`desktop` 两个 profile 的沙箱相关行集合一致(`sandbox-local` / `sandbox-policy` /
+`pwsh-sandbox` / `fs-sandbox`,`pwsh-sandbox` 两边都没有额外配置)。
+
+**桥接层会替你说出来**:任务收尾时桥接层解会话日志,把"空内容 + `isError:false`"的 shell
+调用数出来,在答复末尾附一段告警(调用次数、命令样例、当前权限档、出路),并落进任务记录的
+`shellHollowCalls` / `shellHollowSamples` —— 不会再把"完成但什么都没做"的结果悄悄交给调用方。
+
+**怎么办**:要跑命令(构建 / 测试 / CLI 调用)就显式给 `permission: "danger-full-access"`;
+只做文件读写的任务不受影响,照常派即可。**验证办法**:派一条 `dsh_task` 让它 `echo` 一个标记,
+看答复末尾有没有那段告警(有 ⇒ 执行面是空的)。
+
+---
+
 ## 6. 并发(多开)与在 GUI 里查看
 
 ### 6.1 能不能多开
@@ -966,6 +997,11 @@ harness 会把 MCP **子进程的 stderr 一律渲染成 warning/error**,所以�
 看 `meta.json` 的 `stopReason` 与 `error`,以及 `stderr.log` 末尾。`DSH 进程退出码 N`
 一般是模型/凭据问题。
 
+**Q:子代理说"命令执行了"但没有任何输出/副作用?**
+
+先看任务答复末尾有没有 `⚠️ 执行面告警`。有 ⇒ 是沙箱档把 shell 吞了(见 §5.1),让调用方改用
+`permission: "danger-full-access"` 再派一次。没有那段告警但确实没输出 ⇒ 才是命令本身或模型的问题。
+
 **Q:子代理回答"文件是二进制/乱码"?**
 先确认那个文件是谁写的、能不能被别的进程按原文读到(node/npm 现场生成的中间文件在某些
 安全软件环境下可能被改写),再怀疑模型。别把这类现象当成模型幻觉。
@@ -1019,7 +1055,8 @@ DSH 父会话回答完**不会**杀掉子代理(杀了等于丢工作),它们会
 │   ├── tasks-probe.mjs       只验任务层的小烟测
 │   ├── session-perm-probe.mjs 解开某个会话日志,打印它**实际生效**的权限事实
 │   ├── panel-selftest.mjs    悬浮卡片逻辑自检(离线 117 项)
-│   ├── observer-selftest.mjs GUI 观察器自检(34 项,含心跳+口径版本、幽灵收尾、pid 宽限期、token 折叠、吞吐窗口)
+│   ├── observer-selftest.mjs GUI 观察器自检(35 项,含心跳+口径版本、幽灵收尾、pid 宽限期、token 折叠、吞吐窗口、0.1.5 新日志名)
+│   ├── exec-surface-probe.mjs 执行面探针(11 项:会话日志改名兼容 + 沙箱"空转成功"的判定与零误报)
 │   ├── live-audit.mjs        活跃审计:真在跑/幽灵/没记 pid/宿主状态/最近任务耗时(--fix 订正幽灵)
 │   ├── monitor-live-probe.mjs 真心跳 + 真 dsh_task:验 already-running 分支,并确认不重复拉起 GUI
 │   ├── usage-fold-probe.mjs  真实任务日志 → token 用量折叠(逐帧解 zstd,验底部状态条的数据源)
@@ -1070,7 +1107,10 @@ Cursor 各委托一次,并核对 DSH 是否真的按内容要求写出了文件)
 | 注册可见性 | `claude mcp list` / `codex mcp list` | ✅ `dsh` 均显示 Connected / enabled |
 | GUI 可见性 | 会话落在一个按工作区路径编码出来的目录里(如 §6.3 那种 `--D-work-demo--`) | ✅ 执行中文件持续增长(38KB→89KB/25s);GUI 列表可见,但无「执行中」徽标 |
 | **DSH 升级到 0.1.5-rc.1 后回归** | 全套 7 个探针 | ⚠️ 升级当场打坏:`selftest` **43/51**、`leaf-only-probe` 14/15、`monitor-live-probe` 7/8(详见「DSH 版本兼容性」) |
-| 同上,修复后 | 全套 7 个探针 | ✅ **275/275**:panel 117、selftest 54、observer 34、autostart 27、ledger 21、leaf 14、monitor-live 8 |
+| 同上,修复后 | 全套 8 个探针 | ✅ **287/287**:panel 117、selftest 54、observer 35、autostart 27、ledger 21、leaf 14、exec-surface 11、monitor-live 8 |
+| 沙箱档下 shell 空转(§5.1) | 三种权限档各派一条真任务 + 读真实会话日志的 `tool/result` | ✅ 复现:`danger-full-access` 返回 `SPAWN-PING\r\nELAPSED_MS=59\r\n`;`workspace-write` / `read-only` 返回 `"\r\n"` 且 `isError:false`(命令从未启动)。升级前后各取一份日志,行为一致 ⇒ 与 DSH 版本无关 |
+| 空转检测的准确率 | 真实会话日志跑 `detectHollowShellCalls` | ✅ 沙箱那次数出 **11** 次空转调用(带命令原文),`danger-full-access` 那次 **0** 次 ⇒ 零误报 |
+| 会话日志改名兼容 | `node test/exec-surface-probe.mjs` + `observer-selftest` | ✅ 按 `session*.jsonl.zstd` 找、取最大;新旧同名时选中新格式;观察器能从 `session.v3.jsonl.zstd` 折出用量(改名前这条会失败) |
 | 新版真跑一轮(MCP 桥接层) | `node test/monitor-live-probe.mjs` 内的真 `dsh_task` | ✅ `status=ok` 4.9s,产物落盘,观察器记到 `running=true job=20260911-124736-5c6cbc3c` |
 | 新版直接调 profile | `dsh --profile subagent --prompt "…"` | ✅ `stopReason: completed`,答复「好的」,1.2s |
 | 新版 row id 兼容审计 | 对 `app.asar` 逐个查 12 个被 patch 的行 id | ✅ 12/12 仍存在;新发现 `tool-subagent-report` 不再是 loader 行(变成协议消息 kind),探针已同步 |

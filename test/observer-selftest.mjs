@@ -298,6 +298,31 @@ checks.push(['速率在合理量级(几百 tok/s 一档,不是几千)',
 rmSync(rateTaskDir, { recursive: true, force: true });
 rmSync(join(home, 'sessions', '--C-rate-probe--'), { recursive: true, force: true });
 
+// DSH 0.1.5 起会话日志改名成 session.v3.jsonl.zstd(实测改名时刻与本机升级时刻一致)。
+// 只认旧名会让观察器**找不到日志却不报错**,卡片上的用量对新会话静默变空 —— 这条锁死它。
+const v3Session = 'session-observer-selftest-7777-7777-777777777777';
+const v3Bucket = join(home, 'sessions', '--C-v3-probe--', v3Session);
+mkdirSync(v3Bucket, { recursive: true });
+writeFileSync(join(v3Bucket, 'session.v3.jsonl.zstd'), zstdCompressSync(Buffer.from(usageLine(1, 4321), 'utf8')));
+const v3TaskId = 'observertest-000000-77777777';
+const v3TaskDir = join(tasksRoot, v3TaskId);
+mkdirSync(v3TaskDir, { recursive: true });
+writeFileSync(join(v3TaskDir, 'task.json'), JSON.stringify({
+	id: v3TaskId,
+	status: 'running',
+	workspace: 'D:\\v3-probe',
+	startedAt: new Date().toISOString(),
+	caller: 'v3-probe',
+}, null, 2));
+writeFileSync(join(v3TaskDir, 'meta.json'), JSON.stringify({ sessionId: v3Session, pid: process.pid }, null, 2));
+await new Promise((done) => setTimeout(done, tick));
+const v3Projection = emitted.filter((item) => item.event === 'api-session/added'
+	&& item.args[0]?.sessionId === v3Session).at(-1)?.args[0]?.projections?.values?.['dsh-subagent']?.usage;
+checks.push(['新日志名(session.v3.jsonl.zstd)也能折叠出用量(否则卡片用量静默变空)',
+	v3Projection?.outputTokens === 4321, 'output=' + String(v3Projection?.outputTokens)]);
+rmSync(v3TaskDir, { recursive: true, force: true });
+rmSync(join(home, 'sessions', '--C-v3-probe--'), { recursive: true, force: true });
+
 checks.push(['自检跑在隔离的 DSH_HOME 里(绝不往真 HOME 写心跳)',
 	isolatedHome.includes('dsh-observer-selftest-')
 	&& heartbeatPath.startsWith(isolatedHome)

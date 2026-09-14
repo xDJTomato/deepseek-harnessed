@@ -285,7 +285,14 @@ export function decodeLogFile(file) {
 	return parts.join('');
 }
 
-/** 找某个会话的日志文件(sessionId → $DSH_HOME/sessions/<bucket>/<id>/session.jsonl.zstd)。 */
+/**
+ * 找某个会话的日志文件(sessionId → $DSH_HOME/sessions/<bucket>/<id>/session*.jsonl.zstd)。
+ *
+ * ⚠️ 文件名随 DSH 版本变过:0.1.5 起是 `session.v3.jsonl.zstd`。原先硬编码
+ * `session.jsonl.zstd`,升级后**找不到就安静返回 null**,卡片上的 token 用量对新会话
+ * 全成了空 —— 一个不报错的静默回归(实测改名时刻与本机升级时刻一致)。
+ * 这里按 `session*.jsonl.zstd` 找,并取**最大**的那个:真正的日志最大,不依赖 mtime(本机不可靠)。
+ */
 function sessionLogPath(sessionId) {
 	const cached = sessionPathCache.get(sessionId);
 	if (cached !== undefined) {
@@ -297,9 +304,26 @@ function sessionLogPath(sessionId) {
 	let found = null;
 	try {
 		for (const bucket of readdirSync(SESSIONS_ROOT)) {
-			const candidate = join(SESSIONS_ROOT, bucket, sessionId, 'session.jsonl.zstd');
-			if (existsSync(candidate)) {
-				found = candidate;
+			const dir = join(SESSIONS_ROOT, bucket, sessionId);
+			let names;
+			try {
+				names = readdirSync(dir);
+			} catch {
+				continue;
+			}
+			let best = null;
+			for (const name of names) {
+				if (!/^session.*\.jsonl\.zstd$/i.test(name)) continue;
+				const candidate = join(dir, name);
+				try {
+					const size = statSync(candidate).size;
+					if (size > 0 && (best === null || size > best.size)) best = { path: candidate, size };
+				} catch {
+					/* 读不到就当没有 */
+				}
+			}
+			if (best !== null) {
+				found = best.path;
 				break;
 			}
 		}

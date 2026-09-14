@@ -14,7 +14,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import process from 'node:process';
@@ -100,8 +100,27 @@ function sessionDirs() {
 		}
 		for (const entry of entries) {
 			if (!entry.startsWith('session-')) continue;
-			const file = join(bucketDir, entry, 'session.jsonl.zstd');
-			if (existsSync(file)) out.push({ id: entry, file });
+			// 文件名随 DSH 版本变过(0.1.5 起是 session.v3.jsonl.zstd):
+			// 只认旧名会让这个探针在升级后**静默空转**,所以按 session*.jsonl.zstd 找、
+			// 取最大的那个,并在下面显式断言"确实找到了日志"。
+			let best = null;
+			let inside = [];
+			try {
+				inside = readdirSync(join(bucketDir, entry));
+			} catch {
+				continue;
+			}
+			for (const name of inside) {
+				if (!/^session.*\.jsonl\.zstd$/i.test(name)) continue;
+				const candidate = join(bucketDir, entry, name);
+				try {
+					const size = statSync(candidate).size;
+					if (size > 0 && (best === null || size > best.size)) best = { file: candidate, size };
+				} catch {
+					/* 读不到就当没有 */
+				}
+			}
+			if (best !== null) out.push({ id: entry, file: best.file });
 		}
 	}
 	return out;
