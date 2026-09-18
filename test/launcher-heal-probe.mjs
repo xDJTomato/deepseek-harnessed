@@ -8,12 +8,15 @@
  * `lib/launcher.mjs` 原先直接把垫片里的参数拿去 spawn,不做入口存在性校验,故障就以底层
  * MODULE_NOT_FOUND 的形式冒出来(看起来像"任务被静默吞了")。
  *
- * 这个探针只读文件系统、不 spawn 任何东西,断言四组:
+ * 这个探针只读文件系统、不 spawn 任何东西(并把 PATH/APPDATA 收紧到夹具里,否则本机真实的
+ * dsh.cmd 会顶上来),断言五组:
  *   A. 垫片指向不存在的 app.asar 入口、而 resources\app\lib 下真有 → 自愈改指存在的那个,
  *      其余参数与顺序一字不动(候选优先级:app 先于 app.asar.unpacked);
- *   B. 一个候选都没有 → **响亮报错**,且错误里含垫片路径、缺失入口、候选清单与处置办法;
+ *   B. 所有候选都失效 → **聚合报错**,逐条列出每个垫片为什么不行,并给出处置办法;
  *   C. exe 不在安装根时,靠 `app.asar` ↔ `app` 互换命中同一位置;
- *   D. 本机真实垫片解析出的入口必须真实存在(修好之前这条就是红的)。
+ *   D. 候选 1 是入口失效的陈旧残留、候选 2 可用 → **回退到候选 2 并成功**
+ *      (一个残留垫片不该埋掉本机其它可用的 dsh);
+ *   E. 本机真实垫片解析出的入口必须真实存在(修好之前这条就是红的)。
  *
  * 夹具目录按用户约定放在 %TEMP%\dsh-launcher-test-<随机后缀>,**测试结束不删除**(要清理请移到 D:\Stash)。
  *
@@ -36,11 +39,28 @@ function check(name, ok, detail = '') {
 const fixtures = mkdtempSync(join(tmpdir(), 'dsh-launcher-test-'));
 console.log(`夹具目录(按约定保留,不删除): ${fixtures}\n`);
 
-/**
- * 在 `dir` 下造一个只指向该目录的 dsh 垫片,并把 DSH_SUBAGENT_DSH_SHIM 指过去。
- * @returns {{shim:string, missingEntry:string}} 垫片路径与"垫片里写的、但不存在"的入口路径
- */
-function useShim(dir, exe, missingEntry, tail = []) {
+const REAL_ENV = { PATH: process.env.PATH, APPDATA: process.env.APPDATA, SHIM: process.env.DSH_SUBAGENT_DSH_SHIM };
+
+/** 把解析面收紧到夹具里:只留显式指定的候选 1 与候选 2。 */
+function isolateEnv({ shim, appData }) {
+	if (shim === undefined) delete process.env.DSH_SUBAGENT_DSH_SHIM;
+	else process.env.DSH_SUBAGENT_DSH_SHIM = shim;
+	if (appData === undefined) delete process.env.APPDATA;
+	else process.env.APPDATA = appData;
+	process.env.PATH = '';
+}
+
+/** 恢复本机真实环境(最后一个用例要解析真实垫片)。 */
+function restoreEnv() {
+	const saved = { PATH: REAL_ENV.PATH, APPDATA: REAL_ENV.APPDATA, DSH_SUBAGENT_DSH_SHIM: REAL_ENV.SHIM };
+	for (const [key, value] of Object.entries(saved)) {
+		if (value === undefined) delete process.env[key];
+		else process.env[key] = value;
+	}
+}
+
+/** 在 `dir` 下写一份 dsh.cmd 垫片,返回它的路径(不设置环境变量)。 */
+function writeShim(dir, exe, entry, tail = []) {
 	mkdirSync(dir, { recursive: true });
 	const shim = join(dir, 'dsh.cmd');
 	writeFileSync(shim, [
@@ -48,11 +68,25 @@ function useShim(dir, exe, missingEntry, tail = []) {
 		'setlocal DisableDelayedExpansion',
 		'set "ELECTRON_RUN_AS_NODE=1"',
 		'set "DSH_HOME=C:\\fake-from-fixture\\.dsh"',
-		`"${exe}" --expose-internals "${missingEntry}"${tail.map((arg) => ` ${arg}`).join('')} %*`,
+		`"${exe}" --expose-internals "${entry}"${tail.map((arg) => ` ${arg}`).join('')} %*`,
 		'exit /b %errorlevel%',
 		'',
 	].join('\r\n'), 'utf8');
-	process.env.DSH_SUBAGENT_DSH_SHIM = shim;
+	return shim;
+}
+
+/** 按 APPDATA 惯例写一份垫片(= 解析时的候选 2)。 */
+function appDataShim(appData, exe, entry) {
+	return writeShim(join(appData, 'DSH Desktop', 'host-commands', 'desktop', 'bin'), exe, entry);
+}
+
+/**
+ * 写一份垫片、把它设成候选 1(DSH_SUBAGENT_DSH_SHIM),并把环境收紧。
+ * @returns {{shim:string, missingEntry:string}} 垫片路径与"垫片里写的、但不存在"的入口路径
+ */
+function useShim(dir, exe, missingEntry, tail = []) {
+	const shim = writeShim(dir, exe, missingEntry, tail);
+	isolateEnv({ shim });
 	return { shim, missingEntry };
 }
 
@@ -81,9 +115,14 @@ check('A command / env / shim 不变',
 	launcherA.command === exeA && launcherA.env.ELECTRON_RUN_AS_NODE === '1' && launcherA.shim === caseA.shim,
 	`command=${launcherA.command} env=${JSON.stringify(launcherA.env)}`);
 
-// ---- 用例 B:一个候选都不存在 → 响亮报错(不静默降级、不伪造成功) ----
+// ---- 用例 B:所有候选都失效 → 聚合报错(不静默降级、不伪造成功) ----
 const rootB = join(fixtures, 'case-b');
-const caseB = useShim(rootB, join(rootB, 'DSH Desktop.exe'), join(rootB, 'resources', 'app.asar', 'lib', 'desktop-cli.js'));
+const missingB1 = join(rootB, 'stale-shim', 'resources', 'app.asar', 'lib', 'desktop-cli.js');
+const envShimB = writeShim(join(rootB, 'stale-shim'), join(rootB, 'stale-shim', 'DSH Desktop.exe'), missingB1);
+const appDataB = join(rootB, 'appdata');
+const missingB2 = join(rootB, 'appdata-install', 'resources', 'app.asar', 'lib', 'desktop-cli.js');
+const appDataShimB = appDataShim(appDataB, join(rootB, 'appdata-install', 'DSH Desktop.exe'), missingB2);
+isolateEnv({ shim: envShimB, appData: appDataB });
 let errorB = null;
 try {
 	resolveLauncher();
@@ -91,12 +130,15 @@ try {
 	errorB = error;
 }
 const messageB = errorB === null ? '' : errorB.message;
-check('B 一个候选都不存在时抛错(没有静默降级)', errorB !== null, messageB.split('\n')[0]);
-check('B 错误里含缺失入口路径', messageB.includes(caseB.missingEntry), caseB.missingEntry);
-check('B 错误里含垫片路径', messageB.includes(caseB.shim), caseB.shim);
-check('B 错误里含已尝试的候选清单与处置办法',
-	/已尝试的候选/.test(messageB) && /垫片/.test(messageB) && messageB.includes(join(rootB, 'resources', 'app', 'lib')),
-	messageB.split('\n').slice(2).join(' / '));
+check('B 所有候选都失效时抛聚合错(没有静默降级)', errorB !== null, messageB.split('\n')[0]);
+check('B 逐条列出候选 1 的原因(含缺失入口路径)', messageB.includes(missingB1), missingB1);
+check('B 逐条列出候选 2 的原因(两个垫片路径都在)',
+	messageB.includes(envShimB) && messageB.includes(appDataShimB), appDataShimB);
+check('B 每个候选都带上"已尝试的候选"清单',
+	(messageB.match(/已尝试的候选/g) ?? []).length >= 2, `出现 ${(messageB.match(/已尝试的候选/g) ?? []).length} 次`);
+check('B 给出处置办法(修垫片 / 删掉让其重建 / 显式指定)',
+	/处置/.test(messageB) && /重建/.test(messageB) && messageB.includes('DSH_SUBAGENT_DSH_SHIM'),
+	messageB.split('\n').slice(-3, -1).join(' / '));
 
 // ---- 用例 C:exe 不在安装根 → 靠 app.asar ↔ app 互换命中同一位置 ----
 const rootC = join(fixtures, 'case-c');
@@ -106,15 +148,36 @@ useShim(rootC, exeC, join(rootC, 'resources', 'app.asar', 'lib', 'desktop-cli.js
 const launcherC = resolveLauncher();
 check('C 靠 app.asar→app 互换命中', launcherC.args[1] === goodC, `args[1]=${launcherC.args[1]}`);
 
-// ---- 用例 D:本机真实垫片解析出的入口必须真实存在 ----
-delete process.env.DSH_SUBAGENT_DSH_SHIM;
+// ---- 用例 D:候选 1 是失效残留、候选 2 可用 → 回退到候选 2(不是硬失败) ----
+const rootD = join(fixtures, 'case-d');
+const staleShimD = writeShim(join(rootD, 'stale-shim'), join(rootD, 'stale-shim', 'DSH Desktop.exe'), join(rootD, 'stale-shim', 'resources', 'app.asar', 'lib', 'desktop-cli.js'));
+const appDataD = join(rootD, 'appdata');
+const goodEntryD = makeEntry(join(rootD, 'good-install', 'resources', 'app', 'lib', 'desktop-cli.js'));
+const goodShimD = appDataShim(appDataD, join(rootD, 'good-install', 'DSH Desktop.exe'), goodEntryD);
+isolateEnv({ shim: staleShimD, appData: appDataD });
+// 拿 try 包住:这条用例想要的正是"回退成功",一旦抛错就是回归 —— 报 ❌,不要让探针自己崩掉
+let launcherD = null;
+let errorD = '';
+try {
+	launcherD = resolveLauncher();
+} catch (error) {
+	errorD = error.message;
+}
+check('D 候选 1 入口失效时回退到候选 2(一个陈旧残留不该硬失败)',
+	launcherD !== null && launcherD.shim === goodShimD && launcherD.args[1] === goodEntryD,
+	launcherD === null ? `抛错了(硬失败):${errorD.split('\n')[0]}` : `shim=${launcherD.shim}`);
+check('D 回退后的入口文件确实存在',
+	launcherD !== null && existsSync(launcherD.args[1]), launcherD === null ? '同上' : launcherD.args[1]);
+
+// ---- 用例 E:本机真实垫片解析出的入口必须真实存在 ----
+restoreEnv();
 try {
 	const real = resolveLauncher();
 	const entry = real.args.find((arg) => /\.m?js$/i.test(arg));
-	check('D 本机真实垫片的入口文件真实存在',
+	check('E 本机真实垫片的入口文件真实存在',
 		typeof entry === 'string' && existsSync(entry), `${real.shim} → ${String(entry)}`);
 } catch (error) {
-	check('D 本机真实垫片的入口文件真实存在', false, `解析失败:${error.message}`);
+	check('E 本机真实垫片的入口文件真实存在', false, `解析失败:${error.message}`);
 }
 
 console.log(`\n${passed}/${total} 通过`);

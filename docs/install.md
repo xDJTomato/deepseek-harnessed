@@ -13,7 +13,7 @@
 | --- | --- | --- |
 | DSH Desktop | 已安装并能启动 GUI(桥接层最终调用的就是它的 `dsh` 启动器) | `dsh --version` 能打印版本 |
 | DSH 版本 | **0.1.5-rc.1 已适配并全量实测**;0.1.4 及更早同样兼容(三处 API 变化都做了向前兼容) | `dsh --version` |
-| `dsh` 在 PATH 上 | 安装器会用 `lib/launcher.mjs` 解析启动器;解析不到会明确报错 | `dsh --where` 或 `where dsh` |
+| `dsh` 在 PATH 上 | 安装器会用 `lib/launcher.mjs` 解析启动器:某个垫片里的入口失效时**自动改指**,改不了就**回退到下一个候选**,所有候选都不可用才明确报错 | `dsh --where` 或 `where dsh` |
 | Node.js ≥ 24 | 观察器与测试用到 `node:zlib` 的 zstd、`fs` 的新行为 | `node -v` |
 | 操作系统 | **Windows**(进程判活/强杀走 `taskkill` 与 PowerShell 进程快照) | — |
 | `DSH_HOME` | 默认 `~/.dsh`;桥接层所有落盘都在它下面 | `echo $env:DSH_HOME` |
@@ -81,13 +81,13 @@ node test\selftest.mjs
 ### 完整自检套件(改过代码后再跑)
 
 ```powershell
-npm run test:all                      # 上面 10 个探针一次跑完(306 项)
+npm run test:all                      # 上面 10 个探针一次跑完(309 项)
 ```
 
 或逐个跑:
 
 ```powershell
-node test\launcher-heal-probe.mjs    # 垫片入口失效时自愈 / 无从自愈时响亮报错
+node test\launcher-heal-probe.mjs    # 垫片入口失效时自愈 / 回退到下一个候选 / 全失效时聚合报错
 node test\panel-selftest.mjs         # 悬浮卡片逻辑
 node test\selftest.mjs               # 协议级端到端:真拉 MCP server + 真跑一轮任务
 node test\wait-policy-probe.mjs      # 等待口径:默认短超时自己等、只有 running 才轮询
@@ -149,7 +149,7 @@ node uninstall.mjs --dry-run  # 先看会动什么
 | 现象 | 原因 / 处理 |
 | --- | --- |
 | `dsh_health` 报找不到启动器 | `dsh` 不在 PATH。装好 DSH Desktop 后重开一个终端;或用 `DSH_SUBAGENT_DSH_SHIM` 显式指向 `dsh.cmd` |
-| `dsh` 一调就失败,日志里 `Cannot find module '…\resources\app.asar\lib\desktop-cli.js'` | **DSH Desktop 更新后垫片里的入口过期**(Desktop 把入口从 `resources\app.asar\lib\` 挪到了 `resources\app\lib\`,而 `dsh.cmd` 是上一次安装生成的、不会跟着更新)。0.1.6 起桥接层会自愈到真实存在的那个入口;万一三个候选都不在,它会直接报出垫片路径、缺失入口与候选清单 —— 删掉该垫片让 Desktop 重建,或把垫片里的入口改成存在的那个 |
+| `dsh` 一调就失败,日志里 `Cannot find module '…\resources\app.asar\lib\desktop-cli.js'` | **DSH Desktop 更新后垫片里的入口过期**(Desktop 把入口从 `resources\app.asar\lib\` 挪到了 `resources\app\lib\`,而 `dsh.cmd` 是上一次安装生成的、不会跟着更新)。0.1.6 起桥接层会自愈到真实存在的那个入口;某个垫片改不了就**继续试下一个候选**(所以一份陈旧残留不会挡住在 PATH 里那个可用的 `dsh`);**所有候选都不可用**时才报一条聚合错误,逐条列出每个垫片缺的是哪个入口 —— 按它的提示修垫片、删掉失效垫片让 Desktop 重建,或用 `DSH_SUBAGENT_DSH_SHIM` 显式指定可用的那个 |
 | 子代理起来就退出码 1,日志里有 `composed sandbox and approval defaults match no preset` | 你改了 profile 的沙箱/审批组合却没有同步预设表。见 [configuration.md](./configuration.md#权限预设为什么必须逐字对齐) |
 | 卡片一直是空的 | 观察器没生效(没重启),或页面命中了旧 bundle(强刷一次) |
 | 会话日志读出来是乱码 | 某些安全软件的文件过滤会让"一个进程写、另一个进程读"的文件变成非原文。用 `dsh-subagent --list` 与卡片读(它们都经由 node),必要时把文件复制出来再解析 |
