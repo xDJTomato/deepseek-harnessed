@@ -92,6 +92,7 @@ import 时直接抛 `does not provide an export named 'assertNever'`。插件树
 ```bash
 dsh --version                                  # 先看版本
 node test/selftest.mjs                         # 协议级端到端:真拉 MCP + 真跑一轮(最能说明问题)
+node test/launcher-heal-probe.mjs              # 垫片里的入口文件还在不在(Desktop 换打包形态时第一个红)
 node test/leaf-only-probe.mjs                  # row id 有没有被改名/删掉
 node test/monitor-live-probe.mjs               # 观察器 + 宿主判活
 ```
@@ -319,7 +320,7 @@ DSH_SUBAGENT_STATUS_WAIT_SECONDS=540   # dsh_task_status 的默认等待
 | Claude Code 全局记忆 | `~/.claude/CLAUDE.md` | 「子代理委派:统一走 DSH」 |
 | Claude Code 权限 | `~/.claude/settings.json` | `permissions.allow += mcp__dsh` |
 | Claude Desktop(若安装) | `%APPDATA%\Claude\claude_desktop_config.json` | `mcpServers.dsh` |
-| Codex CLI / Desktop | `~/.codex/config.toml` | `[mcp_servers.dsh]` |
+| Codex CLI / Desktop | `~/.codex/config.toml` | `[mcp_servers.dsh]`(含 `startup_timeout_sec = 60` / `tool_timeout_sec = 600`,与 §2 同口径) |
 | Codex 全局记忆 | `~/.codex/AGENTS.md` | 「子代理委派:统一走 DSH」 |
 | Gemini CLI | `~/.gemini/settings.json` | `mcpServers.dsh` |
 | Antigravity | `~/.gemini/antigravity/mcp_config.json` | `mcpServers.dsh` |
@@ -1201,6 +1202,7 @@ DSH 父会话回答完**不会**杀掉子代理(杀了等于丢工作),它们会
 │   ├── monitor-live-probe.mjs 真心跳 + 真 dsh_task:验 already-running 分支,并确认不重复拉起 GUI
 │   ├── usage-fold-probe.mjs  真实任务日志 → token 用量折叠(逐帧解 zstd,验底部状态条的数据源)
 │   ├── leaf-only-probe.mjs   叶子闸门探针(14 项:配置级 7 条闸门 + 会话日志里的真实工具表)
+│   ├── launcher-heal-probe.mjs 垫片入口自愈探针(10 项:入口失效自愈 / 无候选时响亮报错 / app.asar↔app 互换)
 │   ├── gui-graph-probe.mjs   客户端插件启动图探针(真起一个 web 实例)
 │   ├── live-probe.mjs        两采样进度探针(判断任务是否真的在动)
 │   └── dump-session.mjs      解压查看某个 DSH 会话事件时间线
@@ -1248,6 +1250,7 @@ Cursor 各委托一次,并核对 DSH 是否真的按内容要求写出了文件)
 | GUI 可见性 | 会话落在一个按工作区路径编码出来的目录里(如 §6.3 那种 `--D-work-demo--`) | ✅ 执行中文件持续增长(38KB→89KB/25s);GUI 列表可见,但无「执行中」徽标 |
 | **DSH 升级到 0.1.5-rc.1 后回归** | 全套 7 个探针 | ⚠️ 升级当场打坏:`selftest` **43/51**、`leaf-only-probe` 14/15、`monitor-live-probe` 7/8(详见「DSH 版本兼容性」) |
 | 同上,修复后 | 全套 9 个探针 | ✅ **296/296**:panel 117、selftest 54、observer 35、autostart 26、ledger 20、leaf 14、exec-surface 11、**wait-policy 11**、monitor-live 8(数字取各探针**自报**值;早先写的 275/287 是把每个探针的收尾行"…通过 ✅"也数了进去,已订正。0.1.4 时是 284/8 个探针,0.1.5 起把等待口径的 11 项并进 `test:all`) |
+| **垫片入口失效自愈(0.1.6)** | `node test/launcher-heal-probe.mjs` + 全套 10 个探针 | ✅ **306/306**:新增 launcher 10 项(垫片指向已消失的 `app.asar` 入口 → 自愈改指 `resources\app\lib\desktop-cli.js` 且其余参数顺序不变;候选全不存在 → 抛错且错误里含垫片路径与缺失入口;exe 不在安装根时靠 `app.asar`↔`app` 互换命中;本机真实垫片入口真实存在),其余 296 项不变。真实故障:Desktop 更新后垫片仍指旧入口 → 每次调 dsh 都 `Cannot find module` + exit 1(表现为"派活静默失败") |
 | **推理强度固定成 high(§3.1)** | 真 `dsh --profile subagent --reasoning-effort high` + 网关直连对比 | ✅ 改前:`UNSUPPORTED_REASONING_EFFORT`(模型没声明推理能力,DSH **完全不带** `reasoning` 参数);改后:exit 0、`reasoningEffort: "high"`。网关侧同题实测:不带参数 `reasoning_tokens=103`,显式 `high` `reasoning_tokens=35` ⇒ 默认比 high 更啰嗦,这才是"思考强度夸张"的根因。另验证配置写坏时是**响亮失败**(整段 settings 被拒、provider 变 `NO_ADAPTER`),不会静默退回旧行为 |
 | **等待口径(§2.3)** | `node test/wait-policy-probe.mjs` | ✅ 11/11:默认 `defaultWaitSeconds=45` / `statusWaitSeconds=30` 且都 <60;不传 `wait_seconds` 时一次调用**3.5s 就带着 `status: ok` 返回**(不再需要轮询),且回答里没有让调用方去轮询;`DSH_SUBAGENT_WAIT_SECONDS=5` 时同一次调用 5.7s 返回 `running` 并给出 `dsh_task_status(job_id="…", wait_seconds=30)`;`dsh_task_status` 不传 `wait_seconds` 时自己等满 20.7s 直到终态 |
 | 沙箱档下 shell 空转(§5.1) | 三种权限档各派一条真任务 + 读真实会话日志的 `tool/result` | ✅ 复现:`danger-full-access` 返回 `SPAWN-PING\r\nELAPSED_MS=59\r\n`;`workspace-write` / `read-only` 返回 `"\r\n"` 且 `isError:false`(命令从未启动)。升级前后各取一份日志,行为一致 ⇒ 与 DSH 版本无关 |

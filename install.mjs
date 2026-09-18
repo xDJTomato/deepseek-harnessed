@@ -155,6 +155,11 @@ function registerCodex() {
 		`command = ${JSON.stringify(NODE)}`,
 		`args = [${JSON.stringify(MCP_ENTRY)}]`,
 		'startup_timeout_sec = 60',
+		// Codex 的单次工具调用默认超时是 60s,而委派动辄几分钟:到点会被先掐断,掐断时发的
+		// notifications/cancelled 还会被桥接层当成"调用方停了这一轮"而杀掉正在跑的任务。
+		// 这一行必须与 README §2 的推荐值一致 —— 以前安装器不写它,用户手写的那行会在
+		// 下一次重跑时被整块覆盖掉,坑原样复发。
+		'tool_timeout_sec = 600',
 	].join('\n');
 	const text = readFileSync(path, 'utf8');
 	const lines = text.split(/\r?\n/);
@@ -165,7 +170,12 @@ function registerCodex() {
 	} else {
 		let stop = start + 1;
 		while (stop < lines.length && !/^\s*\[/.test(lines[stop])) stop += 1;
-		next = [...lines.slice(0, start), ...section.split('\n'), '', ...lines.slice(stop)].join('\n');
+		// 现有的块已经写全了要求的那几行(允许夹注释、顺序不同)⇒ 一个字都不动:
+		// 否则重跑会把手写的说明注释一起吞掉,还可能覆盖掉用户自己调过的值。
+		const present = lines.slice(start, stop).map((line) => line.trim());
+		next = section.split('\n').map((line) => line.trim()).every((line) => present.includes(line))
+			? text
+			: [...lines.slice(0, start), ...section.split('\n'), '', ...lines.slice(stop)].join('\n');
 	}
 	if (next === text) {
 		actions.push({ kind: 'ok', target: path, detail: 'mcp_servers.dsh 已存在' });
@@ -513,8 +523,14 @@ function main() {
 	installCursorRules();
 
 	process.stdout.write(`\n完成:共 ${actions.length} 条动作。\n`);
-	if (dryRun) process.stdout.write('(dry-run:没有真正写入)\n');
-	else {
+	if (dryRun) {
+		// --dry-run 要说清"会改什么"(README/docs 都是这么承诺的),所以逐条列出来;
+		// 其中 kind=ok 的就是"已经是目标状态、一个字都没动"。
+		process.stdout.write('(dry-run:没有真正写入;将要执行的动作如下)\n');
+		for (const action of actions) {
+			process.stdout.write(`  · ${action.kind}: ${action.target}${action.detail === undefined ? '' : ` — ${action.detail}`}\n`);
+		}
+	} else {
 		process.stdout.write('\n下一步:\n');
 		process.stdout.write(`  1) 自检: node "${CLI_ENTRY}" --where\n`);
 		process.stdout.write(`  2) 试跑: node "${CLI_ENTRY}" --workspace . "列出当前目录并总结这个仓库做什么"\n`);

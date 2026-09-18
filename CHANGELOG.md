@@ -2,6 +2,37 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/);日期为本地实测日期。
 
+## [0.1.6] — 2026-09-18
+
+### 修复
+
+- **DSH Desktop 更新后垫片入口失效,表现为"派活静默失败"(真实故障)**:本机 `dsh` 是 DSH Desktop
+  生成的 cmd 垫片,里面写死了打包入口。Desktop 换打包形态后入口从
+  `resources\app.asar\lib\desktop-cli.js` 变成 `resources\app\lib\desktop-cli.js`,而**垫片不会跟着
+  更新** —— 每次经它调 dsh 都在 0.8 秒内 `Error: Cannot find module '…\app.asar\lib\desktop-cli.js'`
+  + exit 1。`lib/launcher.mjs` 原先把垫片参数直接拿去 spawn、**不校验入口存在性**,故障就以底层
+  MODULE_NOT_FOUND 冒出来。现在 `resolveLauncher()` 解析完就校验 `*.js` / `*.mjs` 入口:
+  **入口在就照原样**;**不在就按候选清单自愈**(安装根下的 `resources\app\lib\`、
+  `resources\app.asar\lib\`、`resources\app.asar.unpacked\lib\`,以及缺失路径上 `app.asar` ↔ `app`
+  互换后的同一位置,取第一个真实存在的,其余参数顺序不动);**一个都没命中就响亮报错**,错误里带
+  垫片路径、缺失入口、已尝试的候选清单与处置办法(删掉垫片让它重建,或改垫片里的入口),
+  不静默降级、不伪造成功。
+- **安装器不再把 Codex 手写的 `tool_timeout_sec` 删掉**:`install.mjs` 的 `registerCodex()` 现在与
+  README §2 口径一致地写出 `tool_timeout_sec = 600`。原先它不写这一行,而块替换是"整块覆盖",
+  于是用户按 README 手写的 600 会在下一次重跑安装器时被静默删掉 —— Codex 侧长任务又被 60s 掐断,
+  掐断时的 `notifications/cancelled` 还会被桥接层当成"调用方停了这一轮"而杀掉正在跑的任务。
+  同时把"这一块要不要改写"的判据从"整块文本一模一样"放宽成"要求的那几行都在",手写的说明注释
+  与自己调过的值不再被吞掉(实测:真实配置里那一块的 4 行注释原先会在重跑时消失)。
+- `--dry-run` 现在逐条列出将要执行的动作(其中 `ok` = 已是目标状态、一个字都没动)。原先干跑只说
+  "共 N 条动作",看不出会动什么 —— 而 README §2 / `docs/install.md` 一直承诺"只看会改什么"。
+
+### 新增
+
+- `test/launcher-heal-probe.mjs`(10 项,只读文件系统、不 spawn 任何东西):断言入口失效时自愈到
+  `resources\app\lib\`(候选优先级与其余参数顺序不变)、一个候选都没有时抛错且错误里含垫片路径与
+  缺失入口、exe 不在安装根时靠 `app.asar` ↔ `app` 互换命中、本机真实垫片的入口真实存在。
+  `npm run test:launcher`,并已并入 `npm run test:all`(全套 10 个探针)。
+
 ## [0.1.5] — 2026-09-18
 
 ### 变更
