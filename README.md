@@ -158,6 +158,9 @@ dsh-subagent -w D:\some\repo "列出后端路由文件,汇总最近改动"
 # 协议级自检(会真的拉起 MCP server 并跑一轮任务)
 node $env:USERPROFILE\.dsh\subagent\test\selftest.mjs
 
+# 等待口径:默认短超时自己等、只有 running 才轮询(会真的派两个任务)
+node $env:USERPROFILE\.dsh\subagent\test\wait-policy-probe.mjs
+
 # 监控窗口自动拉起(假 exe + 临时 DSH_HOME,**不会真的启动 GUI**)
 node $env:USERPROFILE\.dsh\subagent\test\monitor-autostart-probe.mjs
 
@@ -180,7 +183,7 @@ node $env:USERPROFILE\.dsh\subagent\test\usage-fold-probe.mjs --all
 
 | 工具 | 作用 |
 | --- | --- |
-| `dsh_task` | 委托一项自包含任务。**必须**给 `expected_seconds`(见下);默认阻塞等待 `wait_seconds`(**30s**);超时则返回 `status: running` 和 `job_id`,由调用方继续轮询 |
+| `dsh_task` | 委托一项自包含任务。**必须**给 `expected_seconds`(见下);默认**自己先等 45s**(短超时):任务在这段里结束就把结果直接带回来(**不需要轮询**);到点还没结束才返回 `status: running` 和 `job_id`(见 §2.3) |
 | `dsh_task_status` | 查询/继续等待某个 job;带上 `expected_seconds` / `deadlineAt` / `remainingSeconds`、**`process_tree`**(实时后代进程数 + 整树 CPU)与 **`recent_activity`**(子代理此刻在干什么);`ok` 时一并返回 DSH 的最终答复全文 |
 | `dsh_task_cancel` | **优雅取消**:标记取消并请求停下,让任务自己收尾 |
 | `dsh_task_kill` | **强制终止**:按 `job_id` 或按 `caller`(停掉"我起的全部任务")立刻杀掉整个 DSH 进程树;**杀掉是验证过的**(不属于本进程的任务走 `taskkill` 并检查退出码,失败如实报 `killed:false` 而不是谎报成功);回报杀了哪些、哪些已经结束 |
@@ -194,7 +197,7 @@ node $env:USERPROFILE\.dsh\subagent\test\usage-fold-probe.mjs --all
 | `expected_seconds`(必填) | 调用方**自己预估**这次委派要多少秒(正整数)。缺失/非正数会被**直接拒绝**(不做默认值兜底),而且是以 **`isError: true`** 的工具结果返回——调用方必须把它当成"这次调用不成立",不能当成正常结果继续往下走。它同时是硬截止:`deadlineAt = startedAt + expected_seconds × DSH_SUBAGENT_DEADLINE_GRACE`(默认 ×2),到点杀进程树并记 `status: "deadline"` |
 | `acceptance` | 可选的一句验收标准("做完 = ……"),落进 `task.json` 并在结果里回显,把验收契约写明确;超过 2000 字符同样以 `isError: true` 拒绝 |
 | `workspace` | 目标工作空间绝对路径;缺省取调用方工作空间(MCP roots),再缺省取 server cwd |
-| `wait_seconds` | 本次阻塞等待秒数,默认 **30**;`0` = 立刻返回 job_id |
+| `wait_seconds` | 本次调用最多阻塞多久,默认 **45**(短超时,**推荐直接省略**);`0` = 立刻返回 job_id(不推荐:等于把一次调用拆成多次轮询)。**不要传 >60** —— 多数 harness 的单次工具超时就 60s(见 §2.3) |
 | `timeout_seconds` | **外层**绝对墙钟上限,默认 1800;比 `expected_seconds` 的硬截止更宽松,两道闸门都生效 |
 | `model` / `provider` | 单次调用换模型(如 `deepseek-v4-pro`),默认沿用 DSH 设置里的模型 |
 | `permission` | `read-only` / `workspace-write` / `danger-full-access`,默认 `danger-full-access` |
@@ -204,9 +207,12 @@ node $env:USERPROFILE\.dsh\subagent\test\usage-fold-probe.mjs --all
 > 每个任务上(`task.json` 的 `caller` / `callerVersion`,以及工具结果里的 `caller:` 行)。
 > 缺省为 `"unknown"`;命令行入口记 `"cli"`。GUI 与 `dsh_health` 都按它分组。
 
-> **轮询节奏**:拿到 `status: running` 后,请在**同一轮**里每 **20~30s** 调一次
-> `dsh_task_status(job_id, wait_seconds=25)`,直到 `ok` / `error` / `deadline` / `stalled` /
-> `cancelled` / `killed`。不要停在一个 `running` 上不动。
+> **等待口径(先等到结果,超时才轮询)**:`dsh_task` 默认会自己等 **45s**。
+> 任务在这段里结束,结果**由这一次调用直接带回** —— 你不用轮询。只有返回 `status: running`
+> (45s 到点还没完)才转成轮询:在同一轮里调 `dsh_task_status(job_id, wait_seconds=30)`,
+> 一次等 30s,一轮一轮推到 `ok` / `error` / `deadline` / `stalled` / `cancelled` / `killed`。
+> **不要传 `wait_seconds=0`**:那是"立刻拿 job_id 然后自己轮询十几次",而每一轮都是调用方
+> 一次完整的推理 —— 又慢又贵。为什么是 45s、以及"想让长任务也一次返回"该改哪里见 §2.3。
 
 > 桥接层默认在提示词前加一段简短的「委托说明」:一次性会话、没人会回答追问、
 > 结束时汇报做了什么/改了哪些文件/结论。这样 DSH 不会提问后卡死。
@@ -218,9 +224,9 @@ node $env:USERPROFILE\.dsh\subagent\test\usage-fold-probe.mjs --all
 
 | 位置 | 内容 |
 | --- | --- |
-| `initialize.instructions` | 委派操作手册浓缩版(1258 字符 ≤ 1500):先估时长 → 写可机检验收 → 短轮询 → 状态语义 → 如何止损 → 失败排查 → 禁止项(MCP 规范支持,harness 会把它当系统提示) |
+| `initialize.instructions` | 委派操作手册浓缩版(≤1500 字符):先估时长 → 写可机检验收 → **先让 dsh_task 自己等(短超时),超时才轮询** → 状态语义 → 如何止损 → 失败排查 → 禁止项(MCP 规范支持,harness 会把它当系统提示) |
 | `dsh_task.description` | 完整手册(约 1800 字符):硬承诺与经验值区间(单文件小改 60~180s / 多文件小特性 300~900s / 大重构 900~1800s 且应拆分)、`deadlineAt = 开始时刻 + expected_seconds × grace`、**七种状态各自的语义与补救动作**、失败时按 `recent_activity` → `progress_bytes`/`last_progress_at` → 任务现场三处排查、以及两条禁止项(>20 分钟的任务必须拆、`permission` 收窄时不要让子代理用 pwsh 写文件) |
-| 各字段 `description` | `expected_seconds` 写明"硬承诺 + 到点杀进程树 + 经验值区间";`acceptance` 写明"一句话、可判定真伪"并给出正例;`wait_seconds` 写明"默认 30、建议 0 或 ≤30、之后每 20~30 秒轮询";`permission` 写明受限档位下请用 write/edit 文件工具;`timeout_seconds`/`model`/`provider`/`raw_prompt`/`label` 各自说明取舍 |
+| 各字段 `description` | `expected_seconds` 写明"硬承诺 + 到点杀进程树 + 经验值区间";`acceptance` 写明"一句话、可判定真伪"并给出正例;`wait_seconds` 写明"默认 45 短超时、推荐省略、到点没结束才用 dsh_task_status(wait_seconds=30) 轮询、别传 0 也别传 >60";`permission` 写明受限档位下请用 write/edit 文件工具;`timeout_seconds`/`model`/`provider`/`raw_prompt`/`label` 各自说明取舍 |
 | `dsh_task_status.description` | 逐字段解释 `progress_bytes` / `last_progress` / `recent_activity` / `process_tree` / `silent_seconds`,并说明"静默但在干活不算停滞" |
 | `dsh_task_kill` / `dsh_task_cancel.description` | 两种模式(按 `job_id` / 按 `caller`)与"什么时候该止损(任务跑偏、deadline 将近仍无进展)" |
 | `dsh_health.description` | `liveTasks` / `activeByCaller` / 看门狗阈值 / `monitorHost` 各字段含义与三种使用场景 |
@@ -252,6 +258,56 @@ node $env:USERPROFILE\.dsh\subagent\test\usage-fold-probe.mjs --all
 > 说明:Windows 上 `taskkill /F`(以及 host 用 `TerminateProcess`)不会给进程任何执行收尾代码的
 > 机会,所以"被强杀"那条兜不住;真正兜住的是前三种。验收记录里有实测:发取消通知后子进程确实消失。
 
+### 2.3 等待口径:先等到结果,超时才轮询(45s / 30s 是评估出来的)
+
+**症状**:长任务被拆成一长串轮询。调用方按老文案传 `wait_seconds=0`,拿到 job_id 后每
+20~30s 调一次 `dsh_task_status`;一个 5 分钟的任务要 10 次以上往返,而**每一轮都是调用方一次
+完整的推理**(前缀全量重算 + 思考),贵且慢。
+
+**改法**:`dsh_task` 默认自己等 **45s**。这一段里任务结束 → 结果由这次调用直接带回,
+零轮询;只有到点还没结束才返回 `status: running`,那时才用 `dsh_task_status`
+(默认等 **30s**)一轮一轮推到终态。也就是说:**默认路径不轮询,轮询是兜底**。
+
+两个默认值的来源(实测,不是拍脑袋):
+
+| 调用方 | 单次工具超时 | 结论 |
+| --- | --- | --- |
+| Codex(`codex-mcp-client`,本机最常跑的调用方) | **60s** —— `mcp_servers.<id>.tool_timeout_sec` 默认 60(官方 config reference) | 最紧的约束 |
+| Claude Code | stdio 服务器空闲窗默认 **30 分钟**、单次墙钟上限约 28 小时;主会话里超过 **2 分钟**的调用会自动转后台任务,结果以任务通知回来 | 远宽于 45s |
+| Cursor(`cursor-vscode`) | 官方 MCP 文档未公开单次工具超时 | 按 60s 保守处理 |
+
+取最紧的 60s 留 25% 余量 ⇒ **45s**;轮询那一段更保守(30s),保证永远打不到超时。
+实测数据:同一个"只回答两个字"的任务,DHS 侧整轮耗时 **1.4~1.7s**,`dsh_task` 默认调用
+**3.5s** 就带着终态返回(§10 `test/wait-policy-probe.mjs` 的 11 项断言)。
+
+**为什么不干脆等 5 分钟一次拿完**:超过调用方的工具超时,harness 会先掐断这次调用;
+而掐断时它可能发 `notifications/cancelled` —— 按 §2.2 的语义,那会被当成"调用方停了这一轮"
+而**把还在跑的任务杀掉**。所以 45s 是"尽量少轮询"和"绝不越过调用方超时"之间的取值。
+
+**想让长任务也一次返回**,要两步一起走:
+
+```toml
+# ① 先把调用方的单次工具超时调大(Codex 为例;command/args 用安装器写好的那两行)
+[mcp_servers.dsh]
+command = "C:\\Program Files\\nodejs\\node.exe"
+args = ["C:\\Users\\<you>\\.dsh\\subagent\\bin\\dsh-subagent-mcp.mjs"]
+tool_timeout_sec = 600
+```
+
+```powershell
+# ② 再同步把桥接层的等待调大(两个都可单独调)
+DSH_SUBAGENT_WAIT_SECONDS=540          # dsh_task 的短超时
+DSH_SUBAGENT_STATUS_WAIT_SECONDS=540   # dsh_task_status 的默认等待
+```
+
+> 两个值都必须**小于**调用方的工具超时,否则会走到上面那个"被掐断 + 误杀"的分支。
+> `dsh_health` 会回报当前生效的 `defaultWaitSeconds` / `statusWaitSeconds` / `waitModel`,
+> 换过环境变量后先用它确认一遍。
+
+> **改完要重启调用方**:MCP server 是每个 harness 在自己启动时拉起的常驻进程,代码与
+> 环境变量都在那一刻定型 —— 换过 `DSH_SUBAGENT_WAIT_SECONDS` 这类环境变量、或升级过
+> 桥接层本体之后,要重启对应 harness(Cursor / Codex / Claude Code)才会生效。
+
 ## 3. 本机已写入的配置
 
 | Harness | 配置文件 | 写入内容 |
@@ -279,6 +335,66 @@ node $env:USERPROFILE\.dsh\subagent\test\usage-fold-probe.mjs --all
 
 所有写入都是**幂等**的,并且会先备份为 `<原文件>.bak-dshsubagent-<时间戳>`;
 JSON 配置若解析失败则**跳过不写**,绝不覆盖用户配置。
+
+### 3.1 把 RIGOL 的 `dv41` 推理强度固定成 `high`
+
+**问题**:本机 `llm-pi-ai` 里的 `rigol` 路由原先**没有声明任何推理能力** —— 模型条目只有
+`id: deepseek-v4.1-flash`,既没有 `reasoningEfforts`,路由也没有 `reasoning`。于是 DSH 发请求时
+**完全不带** `reasoning` 参数,思考强度交给网关自己定。实测同一个"只回答两个字"的请求:
+不带参数时 `reasoning_tokens = 103`,显式 `effort: "high"` 时 `reasoning_tokens = 35` ——
+也就是说**默认比 `high` 更啰嗦**,这正是"长任务里思考强度太夸张"的来源。
+
+`~/.dsh/settings.yaml` 现在这样写(本机已写入):
+
+```yaml
+llm-pi-ai:
+  providers:
+    rigol:
+      apiKeyEnv: RIGOL_API_KEY
+      api: openai-responses
+      baseURL: https://airouter.rigol.com/v1
+      reasoning: high            # 路由默认推理强度:没有显式 --reasoning-effort 时就用它
+      models:
+        - id: deepseek-v4.1-flash
+          reasoningEfforts:      # 声明"这个模型支持哪些档位",并给出各档位落到协议上的写法
+            off: none            # 网关不接受空值,off 必须显式写成 none
+            minimal: minimal
+            low: low
+            medium: medium
+            high: high
+            xhigh: xhigh
+            max: max
+```
+
+要点:
+
+- **没有 `75` 这个取值。** 网关只认 `none|minimal|low|medium|high|xhigh|max`,传 `75` 会被拒
+  (`unknown variant \`75\``,HTTP 400)。"75" 是 harness 侧的显示刻度,落到这个网关就是 `high`
+  (与 Codex 的 `model_reasoning_effort = "high"` 同档)。
+- **两个字段缺一不可**:`reasoningEfforts` 决定"模型支不支持 high"(不声明 → DSH 认为它不支持,
+  显式传 `--reasoning-effort high` 会直接报 `UNSUPPORTED_REASONING_EFFORT`);
+  `reasoning` 决定"没人指定时默认发什么"。路由级 `reasoning` 就是本次要的"固定为 high"。
+- settings 是**每次操作重新读取**的:改完立刻生效,不用重启 DSH Desktop。
+- 想让某一轮更省或更狠:单次调用用 `dsh_task` 的 `model` 换模型,或
+  `dsh --profile subagent --reasoning-effort low --prompt ...`,都在同一份 `reasoningEfforts`
+  声明的范围内(唯一例外是 `off` 也必须先声明 —— 否则被当成"不支持")。
+- 本机的 `vision-toolkit`、以后新增的 provider 都可以照这套写。
+
+自证(本机实测):
+
+```powershell
+# 改之前:失败 —— 说明这个模型压根没声明推理能力(连 high 都不支持)
+dsh --profile subagent --prompt "只回答两个字:好的" --reasoning-effort high
+# → exit 1, {"code":"UNSUPPORTED_REASONING_EFFORT","message":"... does not support reasoning effort \"high\""}
+
+# 改之后:成功
+dsh --profile subagent --prompt "只回答两个字:好的" --reasoning-effort high
+# → exit 0, meta.json 里 {"reasoningEffort":"high","stopReason":"completed"}
+```
+
+> 反过来,如果这份 settings 写坏了(比如给 `reasoningEfforts` 塞了网关不认的值),
+> `dsh-settings-file` 会**整段拒绝加载**并让整个 provider 消失(`NO_ADAPTER: no adapter
+> registered for provider "rigol"`)—— 出错是"响亮"的,不会静默退回旧行为。
 
 重新装配 / 全部撤回:
 
@@ -440,8 +556,9 @@ type task.md | dsh --profile subagent --prompt-stdin
 
 实测(`node test/concurrency-probe.mjs <工作空间> 3`):3 路同时发起,总墙钟 9.2s,三个任务各自 ~8-9s 全部成功——是并行而非串行(串行应≈25s+)。
 
-**推荐的用法**:不需要立刻要答案的任务,用 `wait_seconds: 0` 拿到 `job_id` 就放手,后面用
-`dsh_task_status` 轮询(每 20~30s 一次)。
+**推荐的用法**:默认让 `dsh_task` 自己等(45s 短超时)—— 短任务一次调用直接拿结果;只有它
+返回 `status: running` 才用 `dsh_task_status`(默认每次等 30s)接着推。真要"派完就干别的",
+再显式传 `wait_seconds: 0` 拿 `job_id`,并自己承担后续轮询(见 §2.3)。
 
 **停止**:
 - `dsh_task_cancel` = **优雅取消**:对"正在跑"和"还在排队等名额"的任务都有效(排队中的直接标记
@@ -997,8 +1114,9 @@ CLI 另有两个参数:`--expected-seconds <n>`(默认取外层上限的一半)�
 `claude mcp list` 自检,应出现 `dsh: … √ Connected`;Codex 用 `codex mcp list`。
 
 **Q:`dsh_task` 返回 `status: running`,然后呢?**
-在同一轮里继续调用 `dsh_task_status(job_id, wait_seconds=25)`,大约每 20~30s 一次,直到
-`ok`/`error`/`deadline`/`stalled`/`cancelled`/`killed`。状态里会带 `recent_activity`(子代理此刻
+按它给的那行照做:在同一轮里调用 `dsh_task_status(job_id, wait_seconds=30)`(默认就是 30,
+可以直接省略 `wait_seconds`),每次等 30s,直到 `ok`/`error`/`deadline`/`stalled`/`cancelled`/`killed`。
+能走到这一步,说明 45s 的短超时已经用完了(§2.3)。状态里会带 `recent_activity`(子代理此刻
 在干什么)与 `progress_bytes`;任务的 `prompt.md`、`stderr.log` 也实时落盘,想看原始进度直接看文件。
 
 **Q:Cursor / Claude Code 里这个 MCP server 显示一个 warning?**
@@ -1129,7 +1247,9 @@ Cursor 各委托一次,并核对 DSH 是否真的按内容要求写出了文件)
 | 注册可见性 | `claude mcp list` / `codex mcp list` | ✅ `dsh` 均显示 Connected / enabled |
 | GUI 可见性 | 会话落在一个按工作区路径编码出来的目录里(如 §6.3 那种 `--D-work-demo--`) | ✅ 执行中文件持续增长(38KB→89KB/25s);GUI 列表可见,但无「执行中」徽标 |
 | **DSH 升级到 0.1.5-rc.1 后回归** | 全套 7 个探针 | ⚠️ 升级当场打坏:`selftest` **43/51**、`leaf-only-probe` 14/15、`monitor-live-probe` 7/8(详见「DSH 版本兼容性」) |
-| 同上,修复后 | 全套 8 个探针 | ✅ **284/284**:panel 117、selftest 53、observer 35、autostart 26、ledger 20、leaf 14、exec-surface 11、monitor-live 8(数字取各探针**自报**值;早先写的 275/287 是把每个探针的收尾行"…通过 ✅"也数了进去,已订正) |
+| 同上,修复后 | 全套 9 个探针 | ✅ **296/296**:panel 117、selftest 54、observer 35、autostart 26、ledger 20、leaf 14、exec-surface 11、**wait-policy 11**、monitor-live 8(数字取各探针**自报**值;早先写的 275/287 是把每个探针的收尾行"…通过 ✅"也数了进去,已订正。0.1.4 时是 284/8 个探针,0.1.5 起把等待口径的 11 项并进 `test:all`) |
+| **推理强度固定成 high(§3.1)** | 真 `dsh --profile subagent --reasoning-effort high` + 网关直连对比 | ✅ 改前:`UNSUPPORTED_REASONING_EFFORT`(模型没声明推理能力,DSH **完全不带** `reasoning` 参数);改后:exit 0、`reasoningEffort: "high"`。网关侧同题实测:不带参数 `reasoning_tokens=103`,显式 `high` `reasoning_tokens=35` ⇒ 默认比 high 更啰嗦,这才是"思考强度夸张"的根因。另验证配置写坏时是**响亮失败**(整段 settings 被拒、provider 变 `NO_ADAPTER`),不会静默退回旧行为 |
+| **等待口径(§2.3)** | `node test/wait-policy-probe.mjs` | ✅ 11/11:默认 `defaultWaitSeconds=45` / `statusWaitSeconds=30` 且都 <60;不传 `wait_seconds` 时一次调用**3.5s 就带着 `status: ok` 返回**(不再需要轮询),且回答里没有让调用方去轮询;`DSH_SUBAGENT_WAIT_SECONDS=5` 时同一次调用 5.7s 返回 `running` 并给出 `dsh_task_status(job_id="…", wait_seconds=30)`;`dsh_task_status` 不传 `wait_seconds` 时自己等满 20.7s 直到终态 |
 | 沙箱档下 shell 空转(§5.1) | 三种权限档各派一条真任务 + 读真实会话日志的 `tool/result` | ✅ 复现:`danger-full-access` 返回 `SPAWN-PING\r\nELAPSED_MS=59\r\n`;`workspace-write` / `read-only` 返回 `"\r\n"` 且 `isError:false`(命令从未启动)。升级前后各取一份日志,行为一致 ⇒ 与 DSH 版本无关 |
 | 空转检测的准确率 | 真实会话日志跑 `detectHollowShellCalls` | ✅ 沙箱那次数出 **11** 次空转调用(带命令原文),`danger-full-access` 那次 **0** 次 ⇒ 零误报 |
 | 会话日志改名兼容 | `node test/exec-surface-probe.mjs` + `observer-selftest` | ✅ 按 `session*.jsonl.zstd` 找、取最大;新旧同名时选中新格式;观察器能从 `session.v3.jsonl.zstd` 折出用量(改名前这条会失败) |

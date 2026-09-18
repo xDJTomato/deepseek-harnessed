@@ -81,7 +81,7 @@ node test\selftest.mjs
 ### 完整自检套件(改过代码后再跑)
 
 ```powershell
-npm run test:all                      # 上面 8 个探针一次跑完(284 项)
+npm run test:all                      # 上面 9 个探针一次跑完(296 项)
 ```
 
 或逐个跑:
@@ -89,10 +89,12 @@ npm run test:all                      # 上面 8 个探针一次跑完(284 项)
 ```powershell
 node test\panel-selftest.mjs         # 悬浮卡片逻辑
 node test\selftest.mjs               # 协议级端到端:真拉 MCP server + 真跑一轮任务
+node test\wait-policy-probe.mjs      # 等待口径:默认短超时自己等、只有 running 才轮询
 node test\observer-selftest.mjs      # GUI 观察器(投影 / 判活 / token 折叠 / 吞吐口径)
 node test\ledger-liveness-probe.mjs  # 台账幽灵记录(按 pid 判活)
 node test\monitor-autostart-probe.mjs# 监控窗口自动拉起(假 exe,**不会真启动 GUI**)
 node test\leaf-only-probe.mjs        # 叶子闸门:外部任务不许再分派子代理
+node test\exec-surface-probe.mjs     # 执行面体检(空转检测 + 会话日志改名兼容)
 node test\monitor-live-probe.mjs     # 真心跳 + 真 dsh_task:验 already-running 分支
 node test\usage-fold-probe.mjs --all # 真实任务日志 → token 用量(只读)
 node test\live-audit.mjs             # 现场审计:真的在跑几个 / 幽灵几个 / 宿主状态

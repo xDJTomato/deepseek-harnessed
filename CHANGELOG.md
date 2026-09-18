@@ -2,6 +2,39 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/);日期为本地实测日期。
 
+## [0.1.5] — 2026-09-18
+
+### 变更
+
+- **等待口径反转:先等到结果,超时才轮询**(委派不再被拆成一串轮询)。旧口径是
+  "`wait_seconds` 默认 30,建议传 0 或 ≤30",于是每次委派都变成"立刻拿 `job_id` + 每 20~30 秒
+  轮询一次":一个 5 分钟的任务要十几次往返,而**每一轮都是调用方一次完整的推理**,又慢又贵。
+  现在 `dsh_task` 默认自己等 **45s**(短超时):任务在这段里结束就把结果**直接带回**,零轮询;
+  只有到点还没结束才返回 `status: running`,那时才用 `dsh_task_status`(默认等 **30s**)
+  一轮一轮推到终态。**轮询从默认路径降级为兜底**。
+- 两个默认值的来源是评估结果,不是拍脑袋:`dsh_task` 的 45s = 最紧的调用方单次工具超时
+  (Codex `mcp_servers.<id>.tool_timeout_sec` 默认 **60s**,官方 config reference)留 25% 余量;
+  Claude Code 的 stdio 空闲窗默认 30 分钟、超 2 分钟自动转后台,远宽于此;Cursor 未公开,
+  按 60s 保守处理。取 60s 以上会踩到"harness 先掐断调用 ⇒ 可能发 `notifications/cancelled`
+  ⇒ 把还在跑的任务当成'停这一轮'杀掉"的分支(0.1.4 的取消语义)。README §2.3 有完整推导与
+  "想让长任务也一次返回"的两步改法。
+- 沿用的环境变量:`DSH_SUBAGENT_WAIT_SECONDS`(`dsh_task` 短超时,默认 45);
+  新增 `DSH_SUBAGENT_STATUS_WAIT_SECONDS`(`dsh_task_status` 默认等待,默认 30)。
+  `dsh_health` 现在回报 `defaultWaitSeconds` / `statusWaitSeconds` / `waitModel`。
+- 工具文案同步改写(否则模型还会照旧文案传 `wait_seconds=0`):`initialize.instructions`、
+  `dsh_task.description`、`wait_seconds` 字段说明、`dsh_task_status` 描述与字段说明、
+  以及"返回 running"时的下一步提示(`dsh_task_status(job_id="…", wait_seconds=30)`)。
+  三处都在劝退:别传 `0`、也别传 `>60`。
+
+### 新增
+
+- `test/wait-policy-probe.mjs`(11 项,真起 MCP server + 真派任务):断言默认口径出自策略本身、
+  不传 `wait_seconds` 时**一次调用就带回终态**(实测 3.5s)、短超时到点才返回 `running` 并给出
+  轮询命令、`dsh_task_status` 不传 `wait_seconds` 时自己会等(实测 20.7s)。
+  `npm run test:wait`,并已并入 `npm run test:all`(全套 9 个探针)。
+- 自检里多一条**口径回归闸**:`dsh_health` 的 `defaultWaitSeconds` / `statusWaitSeconds` 必须
+  等于当前默认值且都 `< 60`,防止以后有人把等待调到 harness 工具超时之上。
+
 ## [0.1.4] — 2026-09-14
 
 ### 修复
