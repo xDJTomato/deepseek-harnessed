@@ -129,8 +129,8 @@ async function main() {
 	const instructions = String(init?.instructions ?? '');
 	check('initialize 带委派操作手册 instructions', instructions.length > 400 && instructions.includes('expected_seconds'),
 		`${instructions.length} 字符`);
-	check('instructions 覆盖 估时/验收/轮询/止损', ['acceptance', '20~30', 'dsh_task_kill', 'stalled'].every((key) => instructions.includes(key)),
-		['acceptance', '20~30', 'dsh_task_kill', 'stalled'].filter((key) => instructions.includes(key)).join(','));
+	check('instructions 覆盖 估时/验收/轮询/止损', ['acceptance', '短超时', 'dsh_task_kill', 'stalled'].every((key) => instructions.includes(key)),
+		['acceptance', '短超时', 'dsh_task_kill', 'stalled'].filter((key) => instructions.includes(key)).join(','));
 	check('instructions 不超长(≤1500)', instructions.length <= 1500, `${instructions.length} 字符`);
 	client.notify('notifications/initialized', {});
 
@@ -142,13 +142,14 @@ async function main() {
 	check('dsh_task 要求必填 expected_seconds', (taskTool?.inputSchema?.required ?? []).includes('expected_seconds'), JSON.stringify(taskTool?.inputSchema?.required ?? []));
 	// 2b. 委派建议必须写进工具定义本身(而不是只在 README 里)
 	const taskDesc = String(taskTool?.description ?? '');
-	const descNeedles = ['硬承诺', '单文件小改 60~180', '可机检', '20~30 秒', 'stalled', 'recent_activity', '20 分钟', 'pwsh'];
+	const descNeedles = ['硬承诺', '单文件小改 60~180', '可机检', '短超时', 'stalled', 'recent_activity', '20 分钟', 'pwsh'];
 	check('dsh_task 描述含完整委派约定', descNeedles.every((needle) => taskDesc.includes(needle)),
 		descNeedles.filter((needle) => !taskDesc.includes(needle)).join(',') || `${taskDesc.length} 字符`);
 	const fieldOf = (name) => String(taskTool?.inputSchema?.properties?.[name]?.description ?? '');
 	check('expected_seconds 字段写明硬截止与经验值', fieldOf('expected_seconds').includes('deadlineAt') && fieldOf('expected_seconds').includes('300~900'), fieldOf('expected_seconds').slice(0, 60));
 	check('acceptance 字段写明可机检', fieldOf('acceptance').includes('可判定真伪'), fieldOf('acceptance').slice(0, 50));
-	check('wait_seconds 字段写明不要阻塞', /dsh_task_status/.test(fieldOf('wait_seconds')) && /20~30/.test(fieldOf('wait_seconds')), fieldOf('wait_seconds').slice(0, 50));
+	// 新契约:默认就等(短超时),只有到点没结束才轮询;并明确劝退 wait_seconds=0 与 >60
+	check('wait_seconds 字段写明"先等、超时才轮询"', /dsh_task_status/.test(fieldOf('wait_seconds')) && /短超时/.test(fieldOf('wait_seconds')) && /不要传 0/.test(fieldOf('wait_seconds')), fieldOf('wait_seconds').slice(0, 60));
 	check('permission 字段写明请用文件工具', fieldOf('permission').includes('write/edit'), fieldOf('permission').slice(0, 50));
 	const healthTool = (tools?.tools ?? []).find((tool) => tool.name === 'dsh_health');
 	check('dsh_health 描述写明 monitorHost 与 liveTasks', /monitorHost/.test(String(healthTool?.description ?? '')) && /liveTasks/.test(String(healthTool?.description ?? '')));
@@ -165,6 +166,15 @@ async function main() {
 		/"monitorHost"[\s\S]{0,160}/.exec(health)?.[0].replace(/\s+/g, ' ').slice(0, 120) ?? '');
 	check('dsh_health 回报心跳判活窗口', /"heartbeatStaleMs": 20000/.test(health) || /"heartbeatStaleMs": \d+/.test(health),
 		/"heartbeatStaleMs"[^,]*/.exec(health)?.[0] ?? '');
+	// 3d. 等待口径是本仓库的**策略**:两个默认值必须落在 harness 单次工具超时(Codex 默认 60s)之内,
+	//     否则调用方会先掐断这次调用,甚至把还在跑的任务当成"停这一轮"给停掉。
+	const expectedTaskWait = Number(process.env.DSH_SUBAGENT_WAIT_SECONDS ?? 45);
+	const expectedStatusWait = Number(process.env.DSH_SUBAGENT_STATUS_WAIT_SECONDS ?? 30);
+	check('默认等待口径 = 短超时 + 轮询等待,且都 < 60s',
+		health.includes(`"defaultWaitSeconds": ${expectedTaskWait}`)
+		&& health.includes(`"statusWaitSeconds": ${expectedStatusWait}`)
+		&& expectedTaskWait < 60 && expectedStatusWait < 60,
+		`default=${expectedTaskWait}s status=${expectedStatusWait}s`);
 
 	// 3b. 委派契约:少了 expected_seconds 必须被明确拒绝(isError:true,而不是"看起来正常"的说明文本)
 	const missing = await client.request('tools/call', { name: 'dsh_task', arguments: { prompt: 'x', workspace, raw_prompt: true } });

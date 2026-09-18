@@ -1,6 +1,6 @@
 {
   "name": "deepseek-harnessed",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "type": "module",
   "description": "把整个 DeepSeek Harness 实例变成 Cursor / Claude Code / Codex 等 harness 可调用的 subagent:一个 MCP 桥接层 + 一个 GUI 实时监控插件。",
@@ -39,7 +39,7 @@
     "install-bridge:dry": "node install.mjs --dry-run",
     "uninstall-bridge": "node uninstall.mjs",
     "test": "node test/selftest.mjs",
-    "test:all": "node test/panel-selftest.mjs && node test/selftest.mjs && node test/observer-selftest.mjs && node test/ledger-liveness-probe.mjs && node test/monitor-autostart-probe.mjs && node test/leaf-only-probe.mjs && node test/exec-surface-probe.mjs && node test/monitor-live-probe.mjs",
+    "test:all": "node test/panel-selftest.mjs && node test/selftest.mjs && node test/observer-selftest.mjs && node test/ledger-liveness-probe.mjs && node test/monitor-autostart-probe.mjs && node test/leaf-only-probe.mjs && node test/exec-surface-probe.mjs && node test/wait-policy-probe.mjs && node test/monitor-live-probe.mjs",
     "test:panel": "node test/panel-selftest.mjs",
     "test:observer": "node test/observer-selftest.mjs",
     "test:ledger": "node test/ledger-liveness-probe.mjs",
@@ -47,6 +47,7 @@
     "test:leaf": "node test/leaf-only-probe.mjs",
     "test:exec": "node test/exec-surface-probe.mjs",
     "test:cancel": "node test/cancel-propagation-probe.mjs",
+    "test:wait": "node test/wait-policy-probe.mjs",
     "test:usage": "node test/usage-fold-probe.mjs --all",
     "audit": "node test/live-audit.mjs"
   }
