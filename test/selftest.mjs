@@ -151,6 +151,17 @@ async function main() {
 	// 新契约:默认就等(短超时),只有到点没结束才轮询;并明确劝退 wait_seconds=0 与 >60
 	check('wait_seconds 字段写明"先等、超时才轮询"', /dsh_task_status/.test(fieldOf('wait_seconds')) && /短超时/.test(fieldOf('wait_seconds')) && /不要传 0/.test(fieldOf('wait_seconds')), fieldOf('wait_seconds').slice(0, 60));
 	check('permission 字段写明请用文件工具', fieldOf('permission').includes('write/edit'), fieldOf('permission').slice(0, 50));
+	// 2c. 单次调用可换模型与推理强度:取值来源与失败语义必须写在 schema 里
+	//     (旧版 model/provider 举的是本机根本不存在的 deepseek-v4-pro / claude-sonnet-4.6)
+	const effortField = taskTool?.inputSchema?.properties?.reasoning_effort;
+	check('dsh_task 暴露 reasoning_effort 参数(string)', effortField?.type === 'string', `type=${JSON.stringify(effortField?.type)}`);
+	check('reasoning_effort 字段写明档位来源与失败语义',
+		fieldOf('reasoning_effort').includes('reasoningEfforts') && fieldOf('reasoning_effort').includes('UNSUPPORTED_REASONING_EFFORT'),
+		fieldOf('reasoning_effort').slice(0, 60));
+	check('model 字段写明"必须是已配置的模型"与 UNKNOWN_MODEL',
+		fieldOf('model').includes('已配置') && fieldOf('model').includes('UNKNOWN_MODEL'), fieldOf('model').slice(0, 60));
+	check('model/provider 字段不再举不存在的模型名',
+		!/deepseek-v4-pro|claude-sonnet-4\.6/.test(`${fieldOf('model')}${fieldOf('provider')}`), fieldOf('model').slice(0, 60));
 	const healthTool = (tools?.tools ?? []).find((tool) => tool.name === 'dsh_health');
 	check('dsh_health 描述写明 monitorHost 与 liveTasks', /monitorHost/.test(String(healthTool?.description ?? '')) && /liveTasks/.test(String(healthTool?.description ?? '')));
 	const killTool = (tools?.tools ?? []).find((tool) => tool.name === 'dsh_task_kill');
@@ -187,6 +198,10 @@ async function main() {
 	const longAcceptance = await client.request('tools/call', { name: 'dsh_task', arguments: { prompt: 'x', workspace, expected_seconds: 60, acceptance: 'x'.repeat(2001), raw_prompt: true } });
 	check('acceptance 过长被拒绝', /acceptance 过长/.test(textOf(longAcceptance)), textOf(longAcceptance).slice(0, 60));
 	check('acceptance 过长返回 isError:true', longAcceptance?.isError === true, `isError=${JSON.stringify(longAcceptance?.isError)}`);
+	// 3e. 可选参数类型不对必须响亮拒绝(旧行为是静默忽略,调用方以为自己的指定生效了)
+	const badEffort = await client.request('tools/call', { name: 'dsh_task', arguments: { prompt: 'x', workspace, expected_seconds: 60, reasoning_effort: 3, raw_prompt: true } });
+	check('reasoning_effort 类型不对被拒绝且点名参数', /reasoning_effort/.test(textOf(badEffort)) && /必须是字符串/.test(textOf(badEffort)), textOf(badEffort).slice(0, 80));
+	check('reasoning_effort 类型不对返回 isError:true', badEffort?.isError === true, `isError=${JSON.stringify(badEffort?.isError)}`);
 
 	// 4. 真跑一轮任务:让 DSH 在工作空间里创建文件并执行命令
 	const marker = `SELFTEST-${Date.now()}`;

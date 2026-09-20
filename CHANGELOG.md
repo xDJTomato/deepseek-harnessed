@@ -2,6 +2,32 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/);日期为本地实测日期。
 
+## [0.1.7] — 2026-09-20
+
+### 新增
+
+- **`dsh_task` 暴露 `reasoning_effort`(单次调用改推理强度)**:`lib/tasks.mjs` 的 `startTask()`
+  早就支持它(写进 `task.json` 的 `reasoningEffort` 并拼出 `--reasoning-effort <值>`),但 `lib/mcp.mjs`
+  **完全没有暴露这个参数**。现在 schema 里有它(`type: 'string'`,位置在 `provider` 之后)、
+  `runTask()` 把它转发给 `startTask()`,工具结果的头部在有值时回显 `reasoning_effort: <值>`
+  (与 `model:` 并列),调用方能自己确认"我指定的档位真的到达了 DSH"。
+
+### 修复
+
+- **工具说明里举的模型名是错的,照抄只会失败**:`model` / `provider` 的 `description` 原先举例
+  `deepseek-v4-pro` / `claude-sonnet-4.6`,而本机 DSH 里**并不存在**这些模型(实测本机
+  `%DSH_HOME%\settings.yaml` 的 `llm-pi-ai.providers.rigol.models[]` 只配了 `deepseek-v4.1-flash`),
+  调用方照抄就拿到 `UNKNOWN_MODEL`。现在写明取值必须是本机已配置的模型 / 已注册的 provider,
+  例子换成真实存在的 `rigol` / `deepseek-v4.1-flash`,并把 `reasoning_effort` 的取值来源
+  (`models[].reasoningEfforts`)与失败语义(`UNSUPPORTED_REASONING_EFFORT`)一并写清;
+  README §2 的参数表与 FAQ 同步。
+- **可选参数"类型不对被静默忽略"改成响亮失败**:`model` / `provider` / `reasoning_effort` 传非字符串
+  (例如 `reasoning_effort: 3`、`model: {}`)时,旧行为是**悄悄当成没传**,调用方以为指定生效了 ——
+  与本仓库"响亮失败、不静默降级"的口径不符。现在三者在 `runTask()` 里走同一个共享校验:
+  类型不对返回 `isError: true` 并点名参数名与"必须是字符串";空串/纯空白仍视为未提供(沿用 DSH 默认)。
+  `test/selftest.mjs` 增加了可机检的断言(档位 schema、`reasoningEfforts`/`UNSUPPORTED_REASONING_EFFORT`
+  文案、`model` 的"已配置 + UNKNOWN_MODEL"、类型不对被拒)。
+
 ## [0.1.6] — 2026-09-18
 
 ### 修复

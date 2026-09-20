@@ -200,7 +200,8 @@ node $env:USERPROFILE\.dsh\subagent\test\usage-fold-probe.mjs --all
 | `workspace` | 目标工作空间绝对路径;缺省取调用方工作空间(MCP roots),再缺省取 server cwd |
 | `wait_seconds` | 本次调用最多阻塞多久,默认 **45**(短超时,**推荐直接省略**);`0` = 立刻返回 job_id(不推荐:等于把一次调用拆成多次轮询)。**不要传 >60** —— 多数 harness 的单次工具超时就 60s(见 §2.3) |
 | `timeout_seconds` | **外层**绝对墙钟上限,默认 1800;比 `expected_seconds` 的硬截止更宽松,两道闸门都生效 |
-| `model` / `provider` | 单次调用换模型(如 `deepseek-v4-pro`),默认沿用 DSH 设置里的模型 |
+| `model` / `provider` | 单次调用换模型/服务商,**取值必须是本机 DSH 里已配置的**:模型见 `$DSH_HOME/settings.yaml` 的 `llm-pi-ai.providers.<provider>.models[].id`(或 `llm-deepseek.models[]`),provider 见同一份文件里的 providers 键;本机当前是 `rigol` / `deepseek-v4.1-flash`。默认沿用 DSH 设置里的模型。写错**不会静默回退**(`UNKNOWN_MODEL` / `NO_ADAPTER`) |
+| `reasoning_effort` | 单次调用改推理强度,取值以该 provider/model 在 DSH 里**声明的档位**为准(`settings.yaml` 的 `models[].reasoningEfforts`,常见档位 `off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`)。模型没声明的档位**不会静默降级**,DSH 直接以 `UNSUPPORTED_REASONING_EFFORT` 快速失败(约 0.5 秒、不调模型)。省略则沿用 DSH 设置里的默认档位。结果头部的 `model:` 与 `reasoning_effort:` 会回显本次真实生效的取值,便于复核 |
 | `permission` | `read-only` / `workspace-write` / `danger-full-access`,默认 `danger-full-access` |
 | `raw_prompt` | `true` 时不加「委托说明」前言,原样传递 |
 
@@ -227,7 +228,7 @@ node $env:USERPROFILE\.dsh\subagent\test\usage-fold-probe.mjs --all
 | --- | --- |
 | `initialize.instructions` | 委派操作手册浓缩版(≤1500 字符):先估时长 → 写可机检验收 → **先让 dsh_task 自己等(短超时),超时才轮询** → 状态语义 → 如何止损 → 失败排查 → 禁止项(MCP 规范支持,harness 会把它当系统提示) |
 | `dsh_task.description` | 完整手册(约 1800 字符):硬承诺与经验值区间(单文件小改 60~180s / 多文件小特性 300~900s / 大重构 900~1800s 且应拆分)、`deadlineAt = 开始时刻 + expected_seconds × grace`、**七种状态各自的语义与补救动作**、失败时按 `recent_activity` → `progress_bytes`/`last_progress_at` → 任务现场三处排查、以及两条禁止项(>20 分钟的任务必须拆、`permission` 收窄时不要让子代理用 pwsh 写文件) |
-| 各字段 `description` | `expected_seconds` 写明"硬承诺 + 到点杀进程树 + 经验值区间";`acceptance` 写明"一句话、可判定真伪"并给出正例;`wait_seconds` 写明"默认 45 短超时、推荐省略、到点没结束才用 dsh_task_status(wait_seconds=30) 轮询、别传 0 也别传 >60";`permission` 写明受限档位下请用 write/edit 文件工具;`timeout_seconds`/`model`/`provider`/`raw_prompt`/`label` 各自说明取舍 |
+| 各字段 `description` | `expected_seconds` 写明"硬承诺 + 到点杀进程树 + 经验值区间";`acceptance` 写明"一句话、可判定真伪"并给出正例;`wait_seconds` 写明"默认 45 短超时、推荐省略、到点没结束才用 dsh_task_status(wait_seconds=30) 轮询、别传 0 也别传 >60";`permission` 写明受限档位下请用 write/edit 文件工具;`timeout_seconds`/`model`/`provider`/`reasoning_effort`/`raw_prompt`/`label` 各自说明取舍(`model`/`provider`/`reasoning_effort` 写明取值必须来自本机已配置的模型 / 已注册的 provider / 该模型已声明的档位,写错即 `UNKNOWN_MODEL` / `NO_ADAPTER` / `UNSUPPORTED_REASONING_EFFORT`) |
 | `dsh_task_status.description` | 逐字段解释 `progress_bytes` / `last_progress` / `recent_activity` / `process_tree` / `silent_seconds`,并说明"静默但在干活不算停滞" |
 | `dsh_task_kill` / `dsh_task_cancel.description` | 两种模式(按 `job_id` / 按 `caller`)与"什么时候该止损(任务跑偏、deadline 将近仍无进展)" |
 | `dsh_health.description` | `liveTasks` / `activeByCaller` / 看门狗阈值 / `monitorHost` 各字段含义与三种使用场景 |
@@ -1154,7 +1155,9 @@ harness 会把 MCP **子进程的 stderr 一律渲染成 warning/error**,所以�
 (Claude Code 的 `MCP_TOOL_TIMEOUT` 等)也要相应放大。
 
 **Q:怎么换模型?**
-按次:`dsh_task(model: "deepseek-v4-pro")` 或 `dsh-subagent -m deepseek-v4-pro`;
+按次:`dsh_task(model: "deepseek-v4.1-flash", provider: "rigol", reasoning_effort: "low")`
+或 `dsh-subagent -m <模型 id>`;取值必须是本机 DSH 里已配置的模型/已注册的 provider/该模型已声明的档位
+(见 §2 的参数表),写错是**响亮失败**(`UNKNOWN_MODEL` / `NO_ADAPTER` / `UNSUPPORTED_REASONING_EFFORT`)。
 全局:改 DSH 设置里的默认模型(设置 → 模型),子代理默认跟随。
 
 **Q:外部任务能不能自己再派子代理?**
@@ -1251,6 +1254,7 @@ Cursor 各委托一次,并核对 DSH 是否真的按内容要求写出了文件)
 | **DSH 升级到 0.1.5-rc.1 后回归** | 全套 7 个探针 | ⚠️ 升级当场打坏:`selftest` **43/51**、`leaf-only-probe` 14/15、`monitor-live-probe` 7/8(详见「DSH 版本兼容性」) |
 | 同上,修复后 | 全套 9 个探针 | ✅ **296/296**:panel 117、selftest 54、observer 35、autostart 26、ledger 20、leaf 14、exec-surface 11、**wait-policy 11**、monitor-live 8(数字取各探针**自报**值;早先写的 275/287 是把每个探针的收尾行"…通过 ✅"也数了进去,已订正。0.1.4 时是 284/8 个探针,0.1.5 起把等待口径的 11 项并进 `test:all`) |
 | **垫片入口失效自愈(0.1.6)** | `node test/launcher-heal-probe.mjs` + 全套 10 个探针 | ✅ **309/309**:新增 launcher 13 项(垫片指向已消失的 `app.asar` 入口 → 自愈改指 `resources\app\lib\desktop-cli.js` 且其余参数顺序不变;候选 1 是失效残留、候选 2 可用 → **回退到候选 2 并成功**;所有候选都失效 → 聚合报错并逐条列出每个垫片的原因与处置办法;exe 不在安装根时靠 `app.asar`↔`app` 互换命中;本机真实垫片入口真实存在),其余 296 项不变。真实故障:Desktop 更新后垫片仍指旧入口 → 每次调 dsh 都 `Cannot find module` + exit 1(表现为"派活静默失败") |
+| **dsh_task 可按次指定模型/服务商/推理强度(0.1.7)** | 真跑 MCP server 四例(`reasoning_effort=low` / 写错模型 / 写错档位 / 类型不对)+ `npm run test:all` | ✅ **315/315 全绿**(改前 309;`selftest.mjs` 由 54 → 60,新增 6 条断言)。四例真跑:`reasoning_effort=low` + `model=deepseek-v4.1-flash` → `status=ok` 且 `task.json` 里 `reasoningEffort:"low"`(档位真到达 DSH);写错模型 → `UNKNOWN_MODEL`(DSH 侧 474ms 就返回,`result.txt` 0 字节);写错档位 → `UNSUPPORTED_REASONING_EFFORT`(557ms);`model`/`provider`/`reasoning_effort` 传非字符串 → `isError:true` 点名参数名且**不启任务**(旧行为是静默忽略,调用方以为指定生效了)。工具结果头部在有值时回显 `reasoning_effort: <值>`,调用方自己可核对 |
 | **推理强度固定成 high(§3.1)** | 真 `dsh --profile subagent --reasoning-effort high` + 网关直连对比 | ✅ 改前:`UNSUPPORTED_REASONING_EFFORT`(模型没声明推理能力,DSH **完全不带** `reasoning` 参数);改后:exit 0、`reasoningEffort: "high"`。网关侧同题实测:不带参数 `reasoning_tokens=103`,显式 `high` `reasoning_tokens=35` ⇒ 默认比 high 更啰嗦,这才是"思考强度夸张"的根因。另验证配置写坏时是**响亮失败**(整段 settings 被拒、provider 变 `NO_ADAPTER`),不会静默退回旧行为 |
 | **等待口径(§2.3)** | `node test/wait-policy-probe.mjs` | ✅ 11/11:默认 `defaultWaitSeconds=45` / `statusWaitSeconds=30` 且都 <60;不传 `wait_seconds` 时一次调用**3.5s 就带着 `status: ok` 返回**(不再需要轮询),且回答里没有让调用方去轮询;`DSH_SUBAGENT_WAIT_SECONDS=5` 时同一次调用 5.7s 返回 `running` 并给出 `dsh_task_status(job_id="…", wait_seconds=30)`;`dsh_task_status` 不传 `wait_seconds` 时自己等满 20.7s 直到终态 |
 | 沙箱档下 shell 空转(§5.1) | 三种权限档各派一条真任务 + 读真实会话日志的 `tool/result` | ✅ 复现:`danger-full-access` 返回 `SPAWN-PING\r\nELAPSED_MS=59\r\n`;`workspace-write` / `read-only` 返回 `"\r\n"` 且 `isError:false`(命令从未启动)。升级前后各取一份日志,行为一致 ⇒ 与 DSH 版本无关 |
