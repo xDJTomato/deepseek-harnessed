@@ -2,6 +2,39 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/);日期为本地实测日期。
 
+## [0.1.9] — 2026-09-21
+
+### 变更
+
+- **四份标准文档改用 `gemini-3.7-flash` 重写为朴实技术语言**:`README.md`、`docs/clients.md`、
+  `docs/configuration.md`、`docs/install.md`。技术信息一条没少(行内记号 704 → 714、代码行 139、
+  版本号 9、跨文档链接 3 全部保留),只是把生造词与黑话换成普通话术
+  (磁贴 / 硬承诺 / 响亮失败 / 口径 / 幽灵 / 垫片 / 探针 / 闸门 → 卡片 / 明确的执行上限 /
+  直接报错不静默 / 规则 / 残留记录 / 入口脚本 / 自检脚本 / 检查)。
+- **公开仓库脱敏**:README 与策略文件里的内部标识换成中性占位符 —— 网关地址、API key 环境变量名、
+  路由名,以及只在本机存在的模型别名;`lib/mcp.mjs` 里"本机当前是某个 provider"这类
+  写死本机事实的句子删掉(模型清单本来就该从 `dsh_health.models` 查,这正是 0.1.8 的方向)。
+  模型 id 示例(`deepseek-v4.1-flash` / `gemini-3.7-flash`)按需保留,示例仍可照抄。
+
+### 修复
+
+- **`test/selftest.mjs` 里的机器相关断言改成结构断言**:原先断言"本机 43 个模型"、
+  "本机默认模型是 `provider/某模型`",换一台机器 clone 下来必红。现在改为断言结构
+  (providers 是对象、每项都是非空 id 数组、顺序与去重与独立解析逐项一致、`defaultModel` 的
+  provider 前缀必须是真实 provider),并加一条**跨文件一致性断言**:枚举结果必须覆盖策略文件里
+  `预设默认模型:` 点名的模型(点名的模型没接入 = 真问题,换机器也有意义)。
+  「裸 id」「`provider/id`」两条断言改为运行时取值,不再写死 provider 名。
+
+### 校验
+
+- 文档闸门(`state/docs-rewrite/check-docs-rewrite.cjs`):行内记号、代码块行、版本号、跨文档链接
+  **0 丢失**(重写期间一度掉到 454 个记号,靠闸门逐项补齐回 714),黑话 **0 命中**。
+  重写前后的度量对照见 `state/docs-rewrite/intentional-deltas.md`。
+- `npm run test:all`:**366/366 全绿**(`exit=0`;selftest 99、panel 126、observer 38、launcher 13、
+  ledger 20、autostart 26、leaf 14、exec-surface 11、wait-policy 11、monitor-live 8)。
+  改完的断言实测有效:枚举 43 个、拒绝时列出全部 43 个可用模型、`provider/id` 与裸 id 两种形式都落盘、
+  合成 fixture 的 decoy 插件 id 不算模型。
+
 ## [0.1.8] — 2026-09-21
 
 ### 新增
@@ -63,9 +96,9 @@
 
 - **工具说明里举的模型名是错的,照抄只会失败**:`model` / `provider` 的 `description` 原先举例
   `deepseek-v4-pro` / `claude-sonnet-4.6`,而本机 DSH 里**并不存在**这些模型(实测本机
-  `%DSH_HOME%\settings.yaml` 的 `llm-pi-ai.providers.rigol.models[]` 只配了 `deepseek-v4.1-flash`),
+  `%DSH_HOME%\settings.yaml` 的 `llm-pi-ai.providers.<路由名>.models[]` 只配了一个模型),
   调用方照抄就拿到 `UNKNOWN_MODEL`。现在写明取值必须是本机已配置的模型 / 已注册的 provider,
-  例子换成真实存在的 `rigol` / `deepseek-v4.1-flash`,并把 `reasoning_effort` 的取值来源
+  例子换成真实存在的模型 id,并把 `reasoning_effort` 的取值来源
   (`models[].reasoningEfforts`)与失败语义(`UNSUPPORTED_REASONING_EFFORT`)一并写清;
   README §2 的参数表与 FAQ 同步。
 - **可选参数"类型不对被静默忽略"改成响亮失败**:`model` / `provider` / `reasoning_effort` 传非字符串

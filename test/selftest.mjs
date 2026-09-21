@@ -239,18 +239,30 @@ async function main() {
 	//      所以代码按 models 数组范围取 —— decoy 断言在 7b 用合成的临时 settings.yaml 覆盖)
 	const healthPayload = payloadOf(health);
 	const modelsInfo = healthPayload.models ?? {};
-	const rigolModels = modelsInfo.providers?.rigol ?? [];
+	const providers = modelsInfo.providers ?? {};
+	const installed = Object.values(providers).flat();
 	const expectedModels = installedModelIds();
-	check('dsh_health.models 列出已接入模型(含本项目的两个)',
-		['deepseek-v4.1-flash', 'gemini-3.7-flash'].every((id) => rigolModels.includes(id)) && rigolModels.length >= 40,
-		`rigol ${rigolModels.length} 个:${rigolModels.slice(0, 3).join(', ')} …`);
+	// 这里断言**结构**而不是本机事实(provider 名、模型个数、本机默认模型):换机器照样能跑,
+	// 但真问题照样抓得住 —— 枚举为空、混进非模型 id、顺序/去重错、策略文件点名了没接入的模型。
+	check('dsh_health.models 按 provider 分组列出已接入模型',
+		modelsInfo.error === null && Object.keys(providers).length > 0
+		&& Object.values(providers).every((ids) => Array.isArray(ids) && ids.length > 0
+			&& ids.every((id) => typeof id === 'string' && id !== '')),
+		JSON.stringify({ providers: Object.keys(providers), error: modelsInfo.error }));
+	const presetModel = /^预设默认模型:\s*([^\s]+)\s*$/m.exec(readFileSync(policyPath, 'utf8'))?.[1] ?? '';
+	check('枚举结果覆盖策略文件里预设点名的模型',
+		presetModel !== '' && installed.includes(presetModel),
+		`预设点名 ${presetModel} / 共 ${installed.length} 个:${installed.slice(0, 3).join(', ')} …`);
 	check('models 按文件出现顺序枚举且去重',
-		rigolModels.length === expectedModels.length && rigolModels.every((id, index) => id === expectedModels[index]),
-		`读到 ${rigolModels.length} 个 / 文件里 ${expectedModels.length} 个`);
-	check('models.providers 不含非模型的 id', modelsInfo.error === null && !rigolModels.includes('dsh-deco-plugin'),
+		installed.length === expectedModels.length && installed.every((id, index) => id === expectedModels[index]),
+		`读到 ${installed.length} 个 / 文件里 ${expectedModels.length} 个`);
+	check('models.providers 不含非模型的 id', modelsInfo.error === null && !installed.includes('dsh-deco-plugin'),
 		`error=${JSON.stringify(modelsInfo.error)}`);
-	check('models.defaultModel 回报 settings.yaml 的 agent-default-model',
-		modelsInfo.defaultModel === 'rigol/deepseek-v4.1-flash', String(modelsInfo.defaultModel));
+	const defaultParts = String(modelsInfo.defaultModel ?? '').split('/');
+	check('models.defaultModel 用 <provider>/<model> 形式回报 settings.yaml 的 agent-default-model',
+		modelsInfo.defaultModel === null
+		|| (defaultParts.length >= 2 && (providers[defaultParts[0]] ?? []).includes(defaultParts.slice(1).join('/'))),
+		String(modelsInfo.defaultModel));
 
 	// 3f. 策略文件:路径 + file:/// 链接 + 预设方案(用户改口径的地方就是它)
 	const policyInfo = healthPayload.modelPolicy ?? {};
@@ -277,7 +289,7 @@ async function main() {
 	check('dsh_setup 拒绝未接入的模型',
 		unknownModel?.isError === true && /并不存在的模型/.test(textOf(unknownModel)), textOf(unknownModel).slice(0, 80));
 	check('dsh_setup 拒绝时列出可用模型清单',
-		textOf(unknownModel).includes('deepseek-v4.1-flash') && textOf(unknownModel).includes('rigol'),
+		installed.length > 0 && installed.every((id) => textOf(unknownModel).includes(id)),
 		textOf(unknownModel).split('\n').slice(0, 2).join(' | '));
 	const unknownPreset = await client.request('tools/call', { name: 'dsh_setup', arguments: { preset: '不存在的方案' } });
 	check('dsh_setup 拒绝不存在的预设并列出可用预设',
@@ -379,7 +391,8 @@ async function main() {
 	const setPreset = await client.request('tools/call', { name: 'dsh_setup', arguments: { preset: '本项目方案' } });
 	check('dsh_setup(preset: "本项目方案") 用预设里的模型落盘',
 		setPreset?.isError !== true && /^默认模型: deepseek-v4\.1-flash$/m.test(readFileSync(policyPath, 'utf8')), textOf(setPreset).slice(0, 80));
-	const setQualified = await client.request('tools/call', { name: 'dsh_setup', arguments: { default_model: 'rigol/gemini-3.7-flash' } });
+	const qualifiedForm = `${Object.keys(providers)[0]}/gemini-3.7-flash`;
+	const setQualified = await client.request('tools/call', { name: 'dsh_setup', arguments: { default_model: qualifiedForm } });
 	check('dsh_setup 也认 `provider/model` 形式',
 		setQualified?.isError !== true && /^默认模型: gemini-3\.7-flash$/m.test(readFileSync(policyPath, 'utf8')), textOf(setQualified).slice(0, 80));
 	check('自检没有动仓库里那份 config/model-policy.md',
@@ -466,9 +479,9 @@ async function main() {
 		'llm-pi-ai:',
 		'  providers:',
 		'    {',
-		'      rigol:',
+		'      demo-gateway:',
 		'        {',
-		'          apiKeyEnv: RIGOL_API_KEY,',
+		'          apiKeyEnv: DEMO_GATEWAY_API_KEY,',
 		'          models:',
 		'            [',
 		'              { id: alpha-one, reasoningEfforts: { high: high } },',
@@ -480,7 +493,7 @@ async function main() {
 		'llm-deepseek:',
 		'  models: []',
 		'agent-default-model:',
-		'  provider: rigol',
+		'  provider: demo-gateway',
 		'  model: alpha-one',
 		'',
 	].join('\n'), 'utf8');
@@ -496,15 +509,15 @@ async function main() {
 	});
 	const isolatedPayload = payloadOf(textOf(await isolatedClient.request('tools/call', { name: 'dsh_health', arguments: {} })));
 	check('只从 models 数组取 id(decoy 的插件 id 不算模型)',
-		JSON.stringify(isolatedPayload.models?.providers) === JSON.stringify({ rigol: ['alpha-one', 'beta-two'] }),
+		JSON.stringify(isolatedPayload.models?.providers) === JSON.stringify({ 'demo-gateway': ['alpha-one', 'beta-two'] }),
 		JSON.stringify(isolatedPayload.models?.providers));
 	check('重复出现的 id 只保留一次(并保持首次出现位置)',
-		(isolatedPayload.models?.providers?.rigol ?? []).filter((id) => id === 'alpha-one').length === 1, '');
+		(isolatedPayload.models?.providers?.['demo-gateway'] ?? []).filter((id) => id === 'alpha-one').length === 1, '');
 	check('llm-deepseek 的空 models 数组不产生 provider',
 		!Object.hasOwn(isolatedPayload.models?.providers ?? {}, 'llm-deepseek'),
 		JSON.stringify(Object.keys(isolatedPayload.models?.providers ?? {})));
 	check('隔离 DSH_HOME 下 defaultModel 按同一份文件解析',
-		isolatedPayload.models?.defaultModel === 'rigol/alpha-one', String(isolatedPayload.models?.defaultModel));
+		isolatedPayload.models?.defaultModel === 'demo-gateway/alpha-one', String(isolatedPayload.models?.defaultModel));
 	check('策略文件不存在时如实报"未指定"而不是崩',
 		isolatedPayload.modelPolicy?.defaultModel === null
 		&& Array.isArray(isolatedPayload.modelPolicy?.presets) && isolatedPayload.modelPolicy.presets.length === 0

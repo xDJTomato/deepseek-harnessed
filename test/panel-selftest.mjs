@@ -247,7 +247,7 @@ const runningRecord = {
 			workspace: "D:\\work\\demo",
 			// 观察器读 meta.json 得到的"实际生效"模型信息(调用方没指定也解析好了)
 			model: "deepseek-v4.1-flash",
-			provider: "rigol",
+			provider: "demo-gateway",
 			reasoningEffort: "high",
 			startedAt: "2026-09-11T10:00:00.000Z",
 			expectedSeconds: 300,
@@ -262,7 +262,7 @@ const entry = logic.entryOf(runningRecord, now);
 check("entryOf 读到调用方分组键", entry?.caller === "cursor-vscode" && entry.glyph === "⌖");
 check("entryOf 计算 tone=running", entry?.tone === "run");
 check("entryOf 读出实际生效的模型/服务商/推理档",
-	entry?.model === "deepseek-v4.1-flash" && entry?.provider === "rigol" && entry?.reasoningEffort === "high",
+	entry?.model === "deepseek-v4.1-flash" && entry?.provider === "demo-gateway" && entry?.reasoningEffort === "high",
 	[entry?.model, entry?.provider, entry?.reasoningEffort].join(" / "));
 const legacyEntry = logic.entryOf({
 	...runningRecord,
@@ -409,7 +409,7 @@ const sessionsState = {
 					progressBytes: 4096,
 					// 只给了 model/provider(没有 reasoningEffort):推理档那一行必须不出现
 					model: "deepseek-v4.1-flash",
-					provider: "rigol",
+					provider: "demo-gateway",
 				},
 			},
 		},
@@ -527,7 +527,7 @@ check("详情页显示任务号与工作区",
 const detailKv = JSON.stringify(byClass(treeDetail, "sap-kv")[0]?.props.children ?? []);
 check("详情页有「模型」行且是实际生效的模型",
 	detailKv.includes("模型") && detailKv.includes("deepseek-v4.1-flash"), detailKv.slice(0, 200));
-check("详情页有「服务商」行", detailKv.includes("服务商") && detailKv.includes("rigol"));
+check("详情页有「服务商」行", detailKv.includes("服务商") && detailKv.includes("demo-gateway"));
 check("详情页有「推理档」行", detailKv.includes("推理档") && detailKv.includes("high"));
 check("详情页提示会话转录不随外部进程增长",
 	byClass(treeDetail, "sap-note").some((note) => JSON.stringify(note.props.children).includes("不会随外部进程增长")));

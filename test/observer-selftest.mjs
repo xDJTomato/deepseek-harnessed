@@ -55,7 +55,7 @@ writeFileSync(join(probeDir, 'task.json'), JSON.stringify({
 	startedAt: new Date().toISOString(),
 }, null, 2));
 writeFileSync(join(probeDir, 'meta.json'), JSON.stringify({
-	sessionId, phase: 'running', provider: 'rigol', model: 'deepseek-v4.1-flash', reasoningEffort: 'high',
+	sessionId, phase: 'running', provider: 'demo-gateway', model: 'deepseek-v4.1-flash', reasoningEffort: 'high',
 }, null, 2));
 
 // 手动再跑一轮 tick(插件每秒自己也会跑,这里直接等)
@@ -84,7 +84,7 @@ const checks = [
 // (runner 建会话时就写好了 —— 调用方省略 model/provider 时它也已经解析成真实值)。
 const modelMeta = added?.args[0]?.projections?.values?.['dsh-subagent'];
 checks.push(['投影带出实际生效的模型/服务商/推理档(meta.json 优先)',
-	modelMeta?.model === 'deepseek-v4.1-flash' && modelMeta?.provider === 'rigol'
+	modelMeta?.model === 'deepseek-v4.1-flash' && modelMeta?.provider === 'demo-gateway'
 	&& modelMeta?.reasoningEffort === 'high',
 	JSON.stringify({ model: modelMeta?.model, provider: modelMeta?.provider, effort: modelMeta?.reasoningEffort })]);
 
