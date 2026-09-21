@@ -78,6 +78,18 @@ const UNKNOWN_PID_GRACE_MS = Number(process.env.DSH_SUBAGENT_OBSERVER_PID_GRACE_
 const RATE_MIN_SPAN_MS = Number(process.env.DSH_SUBAGENT_OBSERVER_RATE_MIN_MS ?? 3000);
 const RATE_SAMPLES = Number(process.env.DSH_SUBAGENT_OBSERVER_RATE_SAMPLES ?? 4);
 
+/**
+ * 只读预览用的会话转录边界。
+ *
+ * 转录随投影走,而投影是**每 2~20 秒重发一整份快照**给客户端 —— 不封顶就是拿一个
+ * 十几 MB 的运行中日志去刷 GUI。所以条数与总字数都限死,多的从最老的开始丢:
+ * 预览要看的是"它现在说到哪了",不是全史。
+ */
+const TRANSCRIPT_MAX_ENTRIES = Number(process.env.DSH_SUBAGENT_OBSERVER_TRANSCRIPT_ENTRIES ?? 60);
+const TRANSCRIPT_MAX_CHARS = Number(process.env.DSH_SUBAGENT_OBSERVER_TRANSCRIPT_CHARS ?? 6000);
+/** 单条最多多少字符(工具返回体常常几万字符)。 */
+const TRANSCRIPT_ENTRY_CHARS = Number(process.env.DSH_SUBAGENT_OBSERVER_TRANSCRIPT_ENTRY_CHARS ?? 600);
+
 /** 诊断开关:DSH_SUBAGENT_OBSERVER_DEBUG=1 时每轮都写日志。 */
 const DEBUG = process.env.DSH_SUBAGENT_OBSERVER_DEBUG === '1';
 
@@ -410,6 +422,81 @@ export function foldUsage(text) {
 	};
 }
 
+/** 单行化(换行折成空格)并按上限截断。 */
+function oneLine(text, limit) {
+	const flat = String(text ?? '').replace(/\s+/gu, ' ').trim();
+	return flat.length > limit ? `${flat.slice(0, limit)}…` : flat;
+}
+
+/** 从消息体的 content 数组里取**文本**块,跳过 reasoning / tool-call 等内部块。 */
+function textOfBlocks(content) {
+	if (!Array.isArray(content)) return '';
+	return content
+		.filter((block) => block?.type === 'text' && typeof block.text === 'string')
+		.map((block) => block.text)
+		.join('\n');
+}
+
+/**
+ * 折叠出**只读预览**要的会话转录:用户说了什么、助手答了什么、调用了什么工具、返回了什么。
+ *
+ * 为什么从会话日志折叠,而不是让客户端自己去读:外部任务的日志属于**别的进程**,
+ * 而卡片是浏览器插件 —— 它既没有文件系统,也不该去碰进展中的会话(见 README §7.6)。
+ * 观察器本来就为了算 token 用量把日志逐帧解开了(`usageOfSession`),这里搭同一趟车,
+ * 不额外解码一遍。
+ *
+ * reasoning 块**故意丢掉**:它是模型的内部推理,长且刷屏,预览里没有价值。
+ * 工具返回为空的**保留**成 `(空返回)`:那是沙箱把命令吞掉的现场,是最该被看见的一种返回。
+ *
+ * @param text - `decodeLogFile()` 解出的 JSONL 文本。
+ * @returns `{ role: 'user'|'assistant'|'call'|'result', text }[]`,已按上限裁剪。
+ */
+export function foldTranscript(text) {
+	const entries = [];
+	let chars = 0;
+	const push = (role, body) => {
+		const brief = oneLine(body, TRANSCRIPT_ENTRY_CHARS);
+		if (brief === '') return;
+		entries.push({ role, text: brief });
+		chars += brief.length;
+		while (entries.length > TRANSCRIPT_MAX_ENTRIES || chars > TRANSCRIPT_MAX_CHARS) {
+			const dropped = entries.shift();
+			if (dropped === undefined) break;
+			chars -= dropped.text.length;
+		}
+	};
+	for (const line of text.split('\n')) {
+		if (line === '') continue;
+		let event;
+		try {
+			event = JSON.parse(line);
+		} catch {
+			continue;
+		}
+		const data = event?.data ?? {};
+		if (event?.type === 'user/message') {
+			push('user', textOfBlocks(data.content));
+		} else if (event?.type === 'assistant/message') {
+			push('assistant', textOfBlocks(data.message?.content));
+		} else if (event?.type === 'tool/call') {
+			let brief = String(data.arguments ?? '');
+			try {
+				const parsed = JSON.parse(brief);
+				brief = parsed.command ?? parsed.description ?? parsed.path ?? brief;
+			} catch {
+				/* 参数不是 JSON 就原样显示 */
+			}
+			push('call', `${String(data.name ?? '工具')}(${brief})`);
+		} else if (event?.type === 'tool/result') {
+			const block = data.message?.content?.[0] ?? {};
+			if (block.type !== 'tool-result') continue;
+			const body = textOfBlocks(block.content);
+			push('result', `${block.isError === true ? '[错误] ' : ''}${body.trim() === '' ? '(空返回)' : body}`);
+		}
+	}
+	return entries;
+}
+
 /**
  * 按真实采样时间跨度算吞吐:Δ输出 / Δ时间,跨度不足 3 秒不算,最近 4 次取平均。
  *
@@ -438,6 +525,8 @@ export function rateOf(previous, usage, now, rates, minSpanMs = RATE_MIN_SPAN_MS
 
 /**
  * 某个外部任务的 token 用量(带 (size, mtime) 缓存,别每 2 秒重解一遍日志)。
+ *
+ * 同一趟解码里顺带折出只读预览的转录,一并缓存(`transcriptOfSession` 取)。
  * @returns 用量对象(含 tokensPerSecond)或 null(还没写出 usage / 解不了)。
  */
 function usageOfSession(sessionId) {
@@ -461,10 +550,15 @@ function usageOfSession(sessionId) {
 		}
 	}
 	let usage = null;
+	let transcript = [];
 	try {
-		usage = foldUsage(decodeLogFile(file));
+		// 一次解码喂两条产物:用量 + 只读预览的转录(避免为预览再解一遍十几 MB 的日志)。
+		const decoded = decodeLogFile(file);
+		usage = foldUsage(decoded);
+		transcript = foldTranscript(decoded);
 	} catch {
 		usage = null;
+		transcript = [];
 	}
 	const rates = cached?.rates ?? [];
 	const previous = cached?.usage === null || cached?.usage === undefined
@@ -476,8 +570,19 @@ function usageOfSession(sessionId) {
 		...(tokensPerSecond === null ? {} : { tokensPerSecond }),
 		...(previous === undefined ? {} : { rateWindowMs: now - previous.at }),
 	};
-	usageCache.set(sessionId, { path: file, size: stat.size, mtimeMs: stat.mtimeMs, usage: enriched, at: now, rates });
+	usageCache.set(sessionId, { path: file, size: stat.size, mtimeMs: stat.mtimeMs, usage: enriched, at: now, rates, transcript });
 	return enriched;
+}
+
+/**
+ * 某个外部任务的只读转录:取 `usageOfSession()` 同一趟缓存的结果。
+ *
+ * 调用它之前**必须先** `usageOfSession(sessionId)`(哪怕不用它的返回值)—— 折叠发生在那里。
+ * @param sessionId - 会话 id。
+ * @returns 转录条目数组(没缓存/没日志时为空数组,绝不会是 undefined)。
+ */
+function transcriptOfSession(sessionId) {
+	return usageCache.get(sessionId)?.transcript ?? [];
 }
 
 /** 写一行观察器日志;日志失败绝不影响宿主。 */
@@ -628,6 +733,13 @@ function start(ctx) {
 				// 口径版本:心跳里带上它,就能**当场**分辨宿主里跑的是哪一版观察器
 				// (file: 插件是否热重载不必靠猜 —— 看这个字段有没有出现即可)。
 				usageRate: { minSpanMs: RATE_MIN_SPAN_MS, samples: RATE_SAMPLES, foldThrottleMs: USAGE_REFRESH_MS },
+				// 只读转录这一版观察器的标记(与 usageRate 同一个用途:心跳里带口径,
+				// 就能当场分辨宿主里跑的是哪一版 —— 没有这一项 = 预览窗里不会有转录)。
+				transcriptCaps: {
+					entries: TRANSCRIPT_MAX_ENTRIES,
+					chars: TRANSCRIPT_MAX_CHARS,
+					entryChars: TRANSCRIPT_ENTRY_CHARS,
+				},
 			}, null, 2)}\n`, 'utf8');
 		} catch (error) {
 			log(`心跳写入失败(已忽略): ${error instanceof Error ? error.message : String(error)}`);
@@ -682,6 +794,8 @@ function start(ctx) {
 			// 用量在**判断之前**取(缓存按 size/mtime + 5 秒节流,取一次很便宜),
 			// 因为"用量涨了"本身就是一次重播的理由。
 			const usage = info.running ? usageOfSession(sessionId) : null;
+			// 只读预览的转录:与用量同一趟折叠(顺序不能反 —— 折叠在 usageOfSession 里做)。
+			const transcript = info.running ? transcriptOfSession(sessionId) : [];
 			const usageOutput = usage === null ? null : usage.outputTokens;
 			const usageMoved = usageOutput !== null && state.usageOutput !== undefined
 				&& state.usageOutput !== null && usageOutput !== state.usageOutput;
@@ -742,6 +856,9 @@ function start(ctx) {
 								error: info.error,
 								recentLines: info.recentLines,
 								resultPreview: info.resultPreview,
+								// 只读预览窗里的对话内容(用户/助手/工具调用/工具返回),已封顶;
+								// 客户端只负责把 role + text 渲染出来,不做任何解析。
+								transcript,
 								// 卡片底部状态条要用:`输入/输出/缓存命中/tok-s`
 								usage: usage ?? null,
 							},

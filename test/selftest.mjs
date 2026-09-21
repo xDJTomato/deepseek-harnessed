@@ -132,10 +132,18 @@ async function main() {
 	// 策略文件**隔离**:落盘断言一律打在临时副本上,绝不改仓库里那份 config/model-policy.md(发布物)。
 	// DSH_HOME 这里仍用**真实**的那份 —— 模型清单的权威来源就是 $DSH_HOME/settings.yaml,
 	// 隔离成空目录就枚举不到已接入模型了(隔离 DSH_HOME 的两条断言在 7b/7c 另起连接做)。
+	//
+	// 副本里把「默认模型」那行**显式改成 `(未指定)`**:那是"首次接入引导"要测的状态,
+	// 而策略文件是**用户可编辑**的 —— 用户随手设了默认模型之后,拿仓库里那份当"未指定"用,
+	// 这几条断言就会红(踩过:本机策略文件被设成 deepseek-v4.1-flash,自检 4 条失败)。
+	// 仓库那份只做**结构性**断言(是 `(未指定)` 或一个裸模型 id 都算合法),见下面的 shippedDefault。
 	const scratch = mkdtempSync(join(tmpdir(), 'dsh-subagent-policy-'));
 	const policyPath = join(scratch, 'model-policy.md');
 	const shippedPolicy = readFileSync(join(BRIDGE_ROOT, 'config', 'model-policy.md'), 'utf8');
-	writeFileSync(policyPath, shippedPolicy, 'utf8');
+	const shippedDefault = /^默认模型:\s*(\S+)\s*$/m.exec(shippedPolicy)?.[1] ?? '';
+	check('发布物里「默认模型」是 (未指定) 或一个裸模型 id(这行本来就是给用户改的)',
+		shippedDefault === '(未指定)' || /^[\w.\-]+$/.test(shippedDefault), JSON.stringify(shippedDefault));
+	writeFileSync(policyPath, shippedPolicy.replace(/^默认模型:.*$/m, '默认模型: (未指定)'), 'utf8');
 	const client = new Client(process.execPath, [MCP_ENTRY], {
 		DSH_SUBAGENT_AUTOSTART_MONITOR: 'off',
 		DSH_SUBAGENT_POLICY: policyPath,

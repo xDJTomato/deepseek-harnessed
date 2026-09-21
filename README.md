@@ -577,7 +577,7 @@ node $env:USERPROFILE\.dsh\subagent\test\monitor-autostart-probe.mjs   # 26 项:
 自检测试：
 
 ```powershell
-node $env:USERPROFILE\.dsh\subagent\test\observer-selftest.mjs   # 35 项,含投影、僵尸/半成品判活、心跳+规则版本、token 折叠、吞吐窗口、0.1.5 新日志名
+node $env:USERPROFILE\.dsh\subagent\test\observer-selftest.mjs   # 49 项,含投影、僵尸/半成品判活、心跳+规则版本、token 折叠、吞吐窗口、只读转录、0.1.5 新日志名
 node $env:USERPROFILE\.dsh\subagent\test\live-audit.mjs          # 现场审计:真的在跑几个 / 残留记录几个 / 宿主状态
 ```
 
@@ -597,7 +597,7 @@ node $env:USERPROFILE\.dsh\subagent\test\live-audit.mjs          # 现场审计:
 | 自适应多列布局 | 网格布局使用 `repeat(auto-fill, minmax(132px, 1fr))` 随实际宽度自适应列数，高度拉伸后内容区域滚动 |
 | 状态汇总统计 | 底部显示 Token 汇总：`250 tok/s \| 缓存命中 99% \| 输入 111M tok · 输出 636K tok` |
 | 空状态展示 | 无活跃任务时居中显示图标与「无活跃子代理」提示文本 |
-| 实时详情查看 | 点击运行中任务卡片进入只读详情页，展示调用方、工作空间、已耗时、验收条件、Token 明细及 `stderr.log` 最新输出行 |
+| 实时详情查看 | 点击运行中任务卡片进入只读详情页，展示调用方、工作空间、已耗时、验收条件、Token 明细及**会话转录**（用户提示词、助手答复、工具调用、工具返回；观察器只读折叠会话日志得来）；没有转录时退回 `stderr.log` 最新输出行 |
 | 历史会话访问 | 点击已完成卡片调用 `ctx.sessions.open(id)` 打开对应会话 |
 | 拖动与折叠 | 头部支持拖动调整位置，点击 `收起` 后最小化为紧凑状态条 |
 
@@ -652,9 +652,9 @@ Token 折叠逻辑遵循同轮次 `(turn, step)` 的 `assistant/chunk(chunk.type
 
 ```powershell
 # 卡片逻辑(离线:假 window/__ModuleLoader__ + 迷你 React,真跑组件函数)
-node $env:USERPROFILE\.dsh\subagent\test\panel-selftest.mjs            # 126 项
-# 观察器侧(隔离 DSH_HOME 造假任务现场,投影里带出 model/provider/reasoningEffort)
-node $env:USERPROFILE\.dsh\subagent\test\observer-selftest.mjs          # 38 项
+node $env:USERPROFILE\.dsh\subagent\test\panel-selftest.mjs            # 138 项
+# 观察器侧(隔离 DSH_HOME 造假任务现场,投影里带出 model/provider/reasoningEffort/只读转录)
+node $env:USERPROFILE\.dsh\subagent\test\observer-selftest.mjs          # 49 项
 
 # 真实任务日志 → token 用量折叠(逐帧解 zstd;只读)
 node $env:USERPROFILE\.dsh\subagent\test\usage-fold-probe.mjs --all
@@ -680,7 +680,7 @@ node $env:USERPROFILE\.dsh\subagent\test\gui-graph-probe.mjs "http://127.0.0.1:3
 | --- | --- |
 | 任务已结束 | 点击直接调用常规打开流程 |
 | 任务运行中 | 默认仅展示只读详情视图，禁用常规打开，提供需二次确认的强制打开按钮 |
-| 实时内容查阅 | 在详情页中读取 `stderr.log` 输出尾部，不直接读取会话日志 |
+| 实时内容查阅 | 在详情页中只读显示会话转录（观察器折叠会话日志），不打开会话；打开会让宿主接管写权并写坏它的日志 |
 
 ### 6.7 本机子代理与外部 `dsh_task` 的对比
 
@@ -755,6 +755,9 @@ node $env:USERPROFILE\.dsh\subagent\test\ledger-liveness-probe.mjs   # 20 项:�
 | `DSH_SUBAGENT_OBSERVER_ACTIVITY_MS` | `5000` | 数据变动触发提前重播的最小间隔（毫秒） |
 | `DSH_SUBAGENT_OBSERVER_RATE_MIN_MS` | `3000` | 计算处理速率的最小采样时间窗口（毫秒，见 §6.5.2） |
 | `DSH_SUBAGENT_OBSERVER_RATE_SAMPLES` | `4` | 速率统计平滑处理的采样次数 |
+| `DSH_SUBAGENT_OBSERVER_TRANSCRIPT_ENTRIES` | `60` | 只读预览的会话转录最多保留多少条（从最旧的开始丢弃） |
+| `DSH_SUBAGENT_OBSERVER_TRANSCRIPT_CHARS` | `6000` | 只读预览的会话转录总字数上限（投影要反复重发，必须封顶） |
+| `DSH_SUBAGENT_OBSERVER_TRANSCRIPT_ENTRY_CHARS` | `600` | 只读预览的单条转录字数上限（工具返回体常常上万字） |
 
 CLI 命令行支持参数：`--expected-seconds <n>`、`--acceptance <text>`、`--caller <name>`（默认为 `cli`）。
 
@@ -836,8 +839,8 @@ CLI 命令行支持参数：`--expected-seconds <n>`、`--acceptance <text>`、`
 │   ├── concurrency-probe.mjs 并发(N 路同时委托)+ 取消验证
 │   ├── tasks-probe.mjs       只验任务层的小烟测
 │   ├── session-perm-probe.mjs 解开某个会话日志,打印它**实际生效**的权限事实
-│   ├── panel-selftest.mjs    悬浮卡片逻辑自检(离线 117 项)
-│   ├── observer-selftest.mjs GUI 观察器自检(35 项,含心跳+规则版本、残留记录收尾、pid 宽限期、token 折叠、吞吐窗口、0.1.5 新日志名)
+│   ├── panel-selftest.mjs    悬浮卡片逻辑自检(离线 138 项)
+│   ├── observer-selftest.mjs GUI 观察器自检(49 项,含心跳+规则版本、残留记录收尾、pid 宽限期、token 折叠、吞吐窗口、只读转录、0.1.5 新日志名)
 │   ├── exec-surface-probe.mjs 执行面自检脚本(11 项:会话日志改名兼容 + 沙箱"空转成功"的判定与零误报)
 │   ├── live-audit.mjs        活跃审计:真在跑/残留记录/没记 pid/宿主状态/最近任务耗时(--fix 订正残留记录)
 │   ├── monitor-live-probe.mjs 真心跳 + 真 dsh_task:验 already-running 分支,并确认不重复拉起 GUI
@@ -879,9 +882,9 @@ CLI 命令行支持参数：`--expected-seconds <n>`、`--acceptance <text>`、`
 | 监控窗口自动启动（端到端链路） | 真实 MCP 服务调用 `dsh_task`（`HOST_CHECK=off`） | ✅ 结果返回 `monitor_host: launched(心跳缺失/过期)`，生成标记文件并在 `monitor-host.log` 记录 `reason=dsh_task <job_id>`，任务返回 `status: ok` |
 | 监控窗口自动启动（本地真实环境） | 默认配置运行 | ✅ 心跳文件不存在时检测到已有宿主进程 `guiHosts=[45148]`，状态标记为 `state=host-older-observer` 与 `gui-open-old-observer`，避免重复启动窗口 |
 | 任务台账状态修正 | `node test/ledger-liveness-probe.mjs` | ✅ 21/21 项测试通过：失效记录准确标记为 `status:lost` 与 `stale:true`；存活任务标记为 `running` 与 `pidAlive:true`；`killByCaller` 仅终止实际存活进程并将失效记录放入 `stale` 列表，重复执行返回 `notFound:true`；`killTreeSync` 对无效 PID 如实报告失败 |
-| 悬浮面板底部状态汇总 | `node test/panel-selftest.mjs`（117 项） | ✅ 格式为 `517/12.2K/517K/1.2M`；部分命中不四舍五入为 100%；支持宿主投影（`tokenUsage`）与观察器日志（`meta.usage`）两种数据源；速率依据观察器 `tokensPerSecond` 渲染，底部按 `tok/s \| 缓存命中 % \| 输入 N tok · 输出 M tok` 格式展示 |
+| 悬浮面板底部状态汇总 | `node test/panel-selftest.mjs`（138 项） | ✅ 格式为 `517/12.2K/517K/1.2M`；部分命中不四舍五入为 100%；支持宿主投影（`tokenUsage`）与观察器日志（`meta.usage`）两种数据源；速率依据观察器 `tokensPerSecond` 渲染，底部按 `tok/s \| 缓存命中 % \| 输入 N tok · 输出 M tok` 格式展示 |
 | 会话日志 Token 折叠 | `node test/usage-fold-probe.mjs --all` | ✅ 解析 1282 帧日志（36 次调用，`chunk.type=usage` 与 `data.usage` 各 36 次）：同轮次替换生效，计算结果为输入 92103、输出 50207、缓存读 1949440、命中率 95.5% |
-| 吞吐速率统计逻辑 | `node test/observer-selftest.mjs`（34 项） | ✅ `2 秒里跳 6000 token` 不产生速率，`跨 29 秒的 6000 token` 准确计算为约 207 tok/s；无输出增量时不显示速率；采样窗口取最近 4 次平均值，日志增长时投影输出 `tokensPerSecond` 且 `< 2000`；心跳携带 `usageRate` 字段 |
+| 吞吐速率统计逻辑 | `node test/observer-selftest.mjs`（49 项） | ✅ `2 秒里跳 6000 token` 不产生速率，`跨 29 秒的 6000 token` 准确计算为约 207 tok/s；无输出增量时不显示速率；采样窗口取最近 4 次平均值，日志增长时投影输出 `tokensPerSecond` 且 `< 2000`；心跳携带 `usageRate` 字段 |
 | 面板布局与交互测试 | `node test/panel-selftest.mjs` | ✅ 验证三处调节手柄（`data-axis=x,y,xy`）、光标样式（`cursor: ew-resize/ns-resize`）、自定义宽高变量（`--sap-w` / `--sap-h` 与 `width: var(--sap-w, 300px)`、`height: var(--sap-h, auto)`）、多列网格排列（`repeat(auto-fill, minmax(132px, 1fr))`）、内容滚动样式（`.sap-root[data-sized="true"] .sap-body { max-height: none }` 与 `.sap-root[data-sized="true"] .sap-body`）、头部折行样式（`flex-wrap: wrap` 与 `flex: none`、`white-space: nowrap`）及空状态居中样式（`justify-content: center` 与「无活跃子代理」文案） |
 | 启动图与 Bundle 缓存 | `node test/gui-graph-probe.mjs <临时实例 URL>` | ✅ 10/10 项通过：插件注入 `__DSH_BOOT__`，包含 `sap-grip`、`auto-fill`、`flex-wrap`、`自由缩放`、`无活跃子代理` 等新版代码（旧文案 `雷达静默` 与旧算法 `throughputOf` 为 false），响应头包含 `cache-control: public, max-age=31536000, immutable` |
 | 本地台账记录检查 | `dsh-subagent --list`（即 `CLI --list` 与 `--list` 参数） | ✅ 检查 134 条历史记录：所有条目均包含 `stale` / `pidAlive` / `derived` 标记，不存在异常运行中记录（已通过 `live-audit --fix` 将 5 条修正为 `lost`） |
@@ -905,5 +908,6 @@ CLI 命令行支持参数：`--expected-seconds <n>`、`--acceptance <text>`、`
 | 上游 LSP 插件问题影响分析 | 分析 `desktop` profile `--dump-config` 与宿主日志 | ✅ 确认桌面宿主不受影响（无 `lsp-stdio` 与 `tool-lsp`，无 `assertNever` 报错），提供 Web Profile 禁用配置 |
 | 标准错误输出静默验证 | 验证 Cursor `mcpprocess.log` | ✅ 正常启动路径下标准错误输出为 0 字节，消除无意义的连接告警；设置 `DSH_SUBAGENT_DEBUG=1` 时才输出版本横幅 |
 | 模型参数限制与校验收敛 | 执行 `npm run test:all` | ✅ 61/61 项全绿，验证工具描述与参数定义的一致性 |
-| 悬浮卡片显示实际生效模型 | `node test/observer-selftest.mjs`（38 项） + `node test/panel-selftest.mjs`（126 项） | ✅ 测试全绿（0 ❌）：投影优先读取 `meta.json` 中的实际生效模型，无记录时回退至 `task.json`；卡片列表行展示模型 chip，详情页展示服务商与推理强度，旧数据兼容显示为默认 |
-| 动态模型管理策略体系 | `npm run test:all`（10 个测试脚本，包含 `test:all` 组合调用） | ✅ **365/365 项全绿**（`selftest.mjs` 包含 98 条断言）：模型列表动态从 `$DSH_HOME/settings.yaml` 解析，从 `llm-pi-ai.providers.<route>.models` 获取，策略文件 `config/model-policy.md` 支持用户自定义与预设方案（`modelPolicy.path` / `fileUrl` / `presets`），未配置时输出初始化引导，执行 `dsh_setup(default_model:)` 写入配置后引导自动关闭，非法参数准确返回 `isError:true` 拒绝处理，短任务正常返回 `status=ok` |
+| 悬浮卡片显示实际生效模型 | `node test/observer-selftest.mjs`（49 项） + `node test/panel-selftest.mjs`（138 项） | ✅ 测试全绿（0 ❌）：投影优先读取 `meta.json` 中的实际生效模型，无记录时回退至 `task.json`；卡片列表行展示模型 chip，详情页展示服务商与推理强度，旧数据兼容显示为默认 |
+| 预览窗口只读显示子代理对话 | `node test/observer-selftest.mjs`（49 项） + `node test/panel-selftest.mjs`（138 项） | ✅ 测试全绿（0 ❌）：观察器与 Token 用量同一趟折叠会话日志，产出「用户 / 助手 / 调用 / 返回」四类转录（推理块不进预览，空返回标成 `(空返回)`），按 60 条与 6000 字封顶后随投影下发；预览窗只渲染 `role` 与 `text`，没有任何写入口，有转录时不再退回 `stderr.log` 尾部 |
+| 动态模型管理策略体系 | `npm run test:all`（10 个测试脚本，包含 `test:all` 组合调用） | ✅ **389/389 项全绿**（`selftest.mjs` 包含 100 条断言）：模型列表动态从 `$DSH_HOME/settings.yaml` 解析，从 `llm-pi-ai.providers.<route>.models` 获取，策略文件 `config/model-policy.md` 支持用户自定义与预设方案（`modelPolicy.path` / `fileUrl` / `presets`），未配置时输出初始化引导，执行 `dsh_setup(default_model:)` 写入配置后引导自动关闭，非法参数准确返回 `isError:true` 拒绝处理，短任务正常返回 `status=ok` |

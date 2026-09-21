@@ -152,6 +152,9 @@ tool-subagent-list-agents
 | `DSH_SUBAGENT_OBSERVER_ACTIVITY_MS` | `5000` | 数据变动触发提前重播的最小时间间隔 |
 | `DSH_SUBAGENT_OBSERVER_RATE_MIN_MS` | `3000` | 计算处理速率（`tok/s`）的最小采样时间窗口，小于该窗口不计入速率 |
 | `DSH_SUBAGENT_OBSERVER_RATE_SAMPLES` | `4` | 速率统计平滑处理的采样次数 |
+| `DSH_SUBAGENT_OBSERVER_TRANSCRIPT_ENTRIES` | `60` | 只读预览的会话转录最多保留多少条（从最旧的开始丢弃） |
+| `DSH_SUBAGENT_OBSERVER_TRANSCRIPT_CHARS` | `6000` | 只读预览的会话转录总字数上限（投影反复重发，必须封顶） |
+| `DSH_SUBAGENT_OBSERVER_TRANSCRIPT_ENTRY_CHARS` | `600` | 只读预览的单条转录字数上限 |
 | `DSH_SUBAGENT_OBSERVER_DEBUG` | — | 设置为 `1` 时输出每轮轮询日志 |
 
 ### 3.2 悬浮监控面板布局与交互

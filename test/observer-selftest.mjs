@@ -21,7 +21,7 @@ process.env.DSH_HOME = isolatedHome;
 process.env.DSH_SUBAGENT_OBSERVER_USAGE_REFRESH_MS = '150';
 process.env.DSH_SUBAGENT_OBSERVER_RATE_MIN_MS = '150';
 process.env.DSH_SUBAGENT_OBSERVER_ACTIVITY_MS = '100';
-const { apply, inject, name, rateOf } = await import('../monitor/observer.mjs');
+const { apply, foldTranscript, inject, name, rateOf } = await import('../monitor/observer.mjs');
 
 const home = isolatedHome;
 const logPath = join(home, 'subagent', 'state', 'observer.log');
@@ -348,16 +348,127 @@ checks.push(['新日志名(session.v3.jsonl.zstd)也能折叠出用量(否则卡
 rmSync(v3TaskDir, { recursive: true, force: true });
 rmSync(join(home, 'sessions', '--C-v3-probe--'), { recursive: true, force: true });
 
+// 只读预览的会话转录:卡片要能看见"它在对话里说了什么",而运行中的外部会话不能点开
+// (点开 = 宿主接管写权、写坏子进程正在写的日志)。这里锁死折叠口径与封顶。
+const transcriptEvents = [
+	{ type: 'user/message', data: { content: [{ type: 'text', text: '把分页修好' }] } },
+	{
+		type: 'assistant/message',
+		data: {
+			turn: 1,
+			step: 1,
+			message: {
+				role: 'assistant',
+				content: [{ type: 'reasoning', text: '内部推理不该出现在预览里' }, { type: 'text', text: '先看代码' }],
+			},
+		},
+	},
+	{ type: 'tool/call', data: { callId: 'c1', name: 'bash', arguments: JSON.stringify({ command: 'npm test', description: '跑测试' }) } },
+	{
+		type: 'tool/result',
+		data: {
+			message: {
+				content: [{
+					type: 'tool-result', toolCallId: 'c1', isError: false,
+					content: [{ type: 'text', text: '通过\n2 个用例' }],
+				}],
+			},
+		},
+	},
+	// 空返回:沙箱把命令吞掉时就是这样(命令从未执行却报成功),预览里必须看得见。
+	{ type: 'tool/result', data: { message: { content: [{ type: 'tool-result', toolCallId: 'c2', isError: false, content: [] }] } } },
+	{
+		type: 'tool/result',
+		data: {
+			message: {
+				content: [{
+					type: 'tool-result', toolCallId: 'c3', isError: true,
+					content: [{ type: 'text', text: '权限不足' }],
+				}],
+			},
+		},
+	},
+];
+const folded = foldTranscript(`${transcriptEvents.map((event) => JSON.stringify(event)).join('\n')}\n`);
+checks.push(['转录按"用户 / 助手 / 调用 / 返回"顺序折叠',
+	folded.map((entry) => entry.role).join(',') === 'user,assistant,call,result,result,result',
+	folded.map((entry) => entry.role).join(',')]);
+checks.push(['推理块(reasoning)不进预览(长且刷屏)',
+	folded.every((entry) => !entry.text.includes('内部推理')),
+	JSON.stringify(folded.map((entry) => entry.text))]);
+checks.push(['工具调用显示成 名字(命令),不是一坨 JSON',
+	folded[2]?.text === 'bash(npm test)', String(folded[2]?.text)]);
+checks.push(['工具返回折成单行', folded[3]?.text === '通过 2 个用例', String(folded[3]?.text)]);
+checks.push(['空返回标成 (空返回)(沙箱吞命令的现场)',
+	folded[4]?.text === '(空返回)', String(folded[4]?.text)]);
+checks.push(['失败的返回带 [错误] 前缀', folded[5]?.text === '[错误] 权限不足', String(folded[5]?.text)]);
+
+// 封顶:投影每 2~20 秒重发一整份快照,转录不封顶就是拿十几 MB 的日志刷 GUI。
+const manyShort = [];
+for (let i = 0; i < 100; i += 1) {
+	manyShort.push({ type: 'user/message', data: { content: [{ type: 'text', text: `短${i}` }] } });
+}
+const byEntries = foldTranscript(manyShort.map((event) => JSON.stringify(event)).join('\n'));
+checks.push(['转录按条数封顶(最多 60 条)',
+	byEntries.length === 60 && byEntries.at(-1).text === '短99',
+	`${byEntries.length} 条,末条 ${String(byEntries.at(-1)?.text)}`]);
+
+const manyLong = [];
+for (let i = 0; i < 200; i += 1) {
+	manyLong.push({ type: 'user/message', data: { content: [{ type: 'text', text: `第${i}条 ` + 'x'.repeat(1000) }] } });
+}
+const byChars = foldTranscript(manyLong.map((event) => JSON.stringify(event)).join('\n'));
+const byCharsTotal = byChars.reduce((sum, entry) => sum + entry.text.length, 0);
+checks.push(['转录按总字数封顶(丢的是最老的,留下的是最新的)',
+	byCharsTotal <= 6000 && byChars.at(-1)?.text.startsWith('第199条'),
+	`${byChars.length} 条 / ${byCharsTotal} 字,末条 ${String(byChars.at(-1)?.text).slice(0, 12)}`]);
+
+// 集成:转录真的进了投影(客户端只负责渲染 role + text)。
+const textSession = 'session-observer-selftest-8888-8888-888888888888';
+const textBucket = join(home, 'sessions', '--C-text-probe--', textSession);
+mkdirSync(textBucket, { recursive: true });
+writeFileSync(join(textBucket, 'session.jsonl.zstd'),
+	zstdCompressSync(Buffer.from(`${transcriptEvents.map((event) => JSON.stringify(event)).join('\n')}\n`, 'utf8')));
+const textTaskId = 'observertest-000000-88888888';
+const textTaskDir = join(tasksRoot, textTaskId);
+mkdirSync(textTaskDir, { recursive: true });
+writeFileSync(join(textTaskDir, 'task.json'), JSON.stringify({
+	id: textTaskId,
+	status: 'running',
+	workspace: 'D:\\text-probe',
+	startedAt: new Date().toISOString(),
+	caller: 'text-probe',
+}, null, 2));
+writeFileSync(join(textTaskDir, 'meta.json'), JSON.stringify({ sessionId: textSession, pid: process.pid }, null, 2));
+await new Promise((done) => setTimeout(done, tick));
+const textProjection = emitted.filter((item) => item.event === 'api-session/added'
+	&& item.args[0]?.sessionId === textSession).at(-1)?.args[0]?.projections?.values?.['dsh-subagent']?.transcript;
+checks.push(['投影里带出了只读转录(预览窗据此渲染)',
+	Array.isArray(textProjection) && textProjection.length === 6 && textProjection[0]?.role === 'user',
+	`${Array.isArray(textProjection) ? textProjection.length : 'X'} 条`]);
+checks.push(['转录条目只有 role/text 两个字段(外部数据不进 DOM)',
+	(Array.isArray(textProjection) ? textProjection : []).every((entry) => Object.keys(entry).length === 2),
+	JSON.stringify((Array.isArray(textProjection) ? textProjection : []).map((entry) => Object.keys(entry)))]);
+rmSync(textTaskDir, { recursive: true, force: true });
+rmSync(join(home, 'sessions', '--C-text-probe--'), { recursive: true, force: true });
+
 checks.push(['自检跑在隔离的 DSH_HOME 里(绝不往真 HOME 写心跳)',
 	isolatedHome.includes('dsh-observer-selftest-')
 	&& heartbeatPath.startsWith(isolatedHome)
 	&& !heartbeatPath.startsWith(defaultHome)]);
+
 // 心跳里带**口径版本**:靠它当场分辨宿主里跑的是哪一版观察器
 // (实测:file: 插件在这个桌面宿主里不会热重载,改完必须重启才生效 —— 看这个字段就知道)。
 const heartbeatPayload = JSON.parse(readFileSync(heartbeatPath, 'utf8'));
 checks.push(['心跳带 usageRate 口径版本(用于分辨宿主里跑的是哪一版)',
 	heartbeatPayload.usageRate?.minSpanMs === 150 && heartbeatPayload.usageRate?.foldThrottleMs === 150,
 	JSON.stringify(heartbeatPayload.usageRate)]);
+// 预览窗口的转录也靠心跳认版本:**没有 transcriptCaps = 宿主里那版观察器还没有转录**,
+// 刷新页面也没用(得重启宿主)。这条断言保证这个标记真的会被写出来。
+checks.push(['心跳带 transcriptCaps(没有它 = 跑着的观察器还没有只读转录)',
+	heartbeatPayload.transcriptCaps?.entries === 60 && heartbeatPayload.transcriptCaps?.chars === 6000
+	&& heartbeatPayload.transcriptCaps?.entryChars === 600,
+	JSON.stringify(heartbeatPayload.transcriptCaps)]);
 
 let failed = 0;
 for (const [label, ok] of checks) {

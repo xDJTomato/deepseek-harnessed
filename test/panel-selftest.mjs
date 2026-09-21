@@ -529,8 +529,8 @@ check("详情页有「模型」行且是实际生效的模型",
 	detailKv.includes("模型") && detailKv.includes("deepseek-v4.1-flash"), detailKv.slice(0, 200));
 check("详情页有「服务商」行", detailKv.includes("服务商") && detailKv.includes("demo-gateway"));
 check("详情页有「推理档」行", detailKv.includes("推理档") && detailKv.includes("high"));
-check("详情页提示会话转录不随外部进程增长",
-	byClass(treeDetail, "sap-note").some((note) => JSON.stringify(note.props.children).includes("不会随外部进程增长")));
+check("详情页提示转录是只读的、由观察器折叠得来",
+	byClass(treeDetail, "sap-note").some((note) => JSON.stringify(note.props.children).includes("只读显示它的会话转录")));
 
 // 详情页里的"仍要打开"需要二次确认
 const forceButton = byClass(treeDetail, "sap-btn").find((button) => String(button.props.children).includes("仍要打开"));
@@ -549,6 +549,80 @@ const backButton = byClass(treeArmed, "sap-btn").find((button) => String(button.
 backButton.props.onClick();
 const treeBack = render(jsx(registered.component, panelProps));
 check("返回后回到分组视图", byClass(treeBack, "sap-drawer").length === 0 && byClass(treeBack, "sap-folder").length === 2);
+
+// ------------------------------------------------------------------ 4.1 只读会话转录
+//
+// 运行中的外部会话**点不开**(打开 = 宿主接管写权、写坏子进程正在写的日志),
+// 所以预览窗里的这段转录是唯一能看见"它在对话里说了什么"的地方。
+// 它只读不是靠约定,而是结构性的:这里没有任何写入口。
+const transcriptProps = {
+	...panelProps,
+	useSessions: (selector) => selector({
+		...sessionsState,
+		byId: {
+			...sessionsState.byId,
+			"session-a": {
+				...runningRecord,
+				projectionValues: {
+					"dsh-subagent": {
+						...runningRecord.projectionValues["dsh-subagent"],
+						transcript: [
+							{ role: "user", text: "把分页修好" },
+							{ role: "assistant", text: "先看代码" },
+							{ role: "call", text: "bash(npm test)" },
+							{ role: "result", text: "通过 2 个用例" },
+							{ role: "result", text: "(空返回)" },
+						],
+					},
+				},
+			},
+		},
+	}),
+};
+// 坏/老投影:不是数组、条目为 null、text 不是字符串 —— 一律丢掉,不渲染 undefined。
+check("transcriptOf 只认 role/text 两个字段,坏条目与空文本丢掉",
+	JSON.stringify(logic.transcriptOf({
+		transcript: [
+			{ role: "user", text: "要保留", extra: "字段不带进 DOM" },
+			null,
+			{ role: "assistant" },
+			{ text: "没有 role 也能显示" },
+			"字符串条目",
+		],
+	})) === JSON.stringify([{ role: "user", text: "要保留" }, { role: "text", text: "没有 role 也能显示" }]),
+	JSON.stringify(logic.transcriptOf({ transcript: [null, { role: "user", text: "要保留", extra: 1 }] })));
+check("老投影没有转录字段时降级成空数组(退回 stderr 尾部)",
+	Array.isArray(entry?.transcript) && entry.transcript.length === 0);
+
+const treeTx0 = render(jsx(registered.component, transcriptProps));
+const tileTx = byClass(treeTx0, "sap-tile")
+	.find((tile) => String(tile.props.title).includes("20260911-100000-aaaa"));
+tileTx.props.onClick();
+const treeTx = render(jsx(registered.component, transcriptProps));
+check("预览窗渲染出会话转录(sap-transcript)", byClass(treeTx, "sap-transcript").length === 1);
+check("预览窗有转录标题", byClass(treeTx, "sap-transcript-cap").length === 1
+	&& String(byClass(treeTx, "sap-transcript-cap")[0].props.children).includes("只读"));
+const txText = textOf(treeTx);
+check("转录里能看到用户提示词、助手答复、工具调用与返回",
+	["把分页修好", "先看代码", "bash(npm test)", "通过 2 个用例", "(空返回)"].every((part) => txText.includes(part)),
+	txText.slice(0, 240));
+check("转录每条带角色名(用户/助手/调用/返回)",
+	["用户", "助手", "调用", "返回"].every((label) => txText.includes(label)), txText.slice(0, 240));
+check("转录按角色打上 data-role(配色用)",
+	byClass(treeTx, "sap-msg").map((message) => message.props["data-role"]).join(",") === "user,assistant,call,result,result",
+	byClass(treeTx, "sap-msg").map((message) => message.props["data-role"]).join(","));
+check("有转录时不再退回 stderr 尾部",
+	byClass(treeTx, "sap-log").length === 0 && !txText.includes("正在追加第 131 段"));
+// 只读 = 结构性的:转录节点上没有任何点击/写入钩子。
+check("转录节点没有任何交互钩子(只读)",
+	byClass(treeTx, "sap-transcript").every((node) => node.props.onClick === undefined && node.props.onMouseDown === undefined)
+	&& byClass(treeTx, "sap-msg").every((node) => node.props.onClick === undefined)
+	&& byClass(treeTx, "sap-msg").every((node) => node.props.children.every((child) => child.props?.onClick === undefined)));
+check("预览窗的写入口只有原来那两个按钮(转录不新增任何入口)",
+	byClass(treeTx, "sap-btn").filter((button) => String(button.props.children).includes("打开")).length === 2);
+check("点转录不会打开会话语义(渲染后 opened 仍为空)", opened.length === 0, JSON.stringify(opened));
+byClass(treeTx, "sap-btn").find((button) => String(button.props.children).includes("返回")).props.onClick();
+check("转录预览返回后回到分组视图", byClass(render(jsx(registered.component, transcriptProps)), "sap-drawer").length === 0);
 
 // 切到「全部」→ 已完成任务出现
 const historyButton = byClass(tree, "sap-btn").find((button) => button.props.title === "显示已结束");

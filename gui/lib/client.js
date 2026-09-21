@@ -22,6 +22,10 @@
 (() => {
 	const PLUGIN_ID = "dsh-subagent-panel";
 	const ACCENT = "var(--dsw-static-deepseek-500, #4176e6)";
+	/** 只读预览里最多渲染多少条转录(观察器已经按条数/字数封顶,这里再夹一次)。 */
+	const TRANSCRIPT_LIMIT = 80;
+	/** 转录角色的显示名:`role` 是观察器给的稳定值,认不出就原样显示原值。 */
+	const TRANSCRIPT_ROLE_LABELS = { user: "用户", assistant: "助手", call: "调用", result: "返回" };
 
 	// 配色是**自带**的,只借用宿主的字体与阴影 —— 实测宿主 token 不适合做这张卡片:
 	//   --dsw-alias-border-inverted 在浅色主题下是 #0000(全透明)⇒ 卡片没有边框;
@@ -363,6 +367,24 @@ body[data-ds-dark-theme] .sap-root, [data-ds-dark-theme] .sap-root {
 }
 .sap-log-line { display: block; }
 .sap-log-line::before { content: "› "; color: var(--sap-accent); font-weight: 700; }
+/* 只读会话转录:预览窗里看"它说到哪了"。只读是结构性的 —— 这里没有任何写入口。 */
+.sap-transcript {
+  display: flex; flex-direction: column; gap: 5px;
+  max-height: 260px; overflow: auto; padding: 6px 7px;
+  border: 1px solid var(--sap-line-soft); border-radius: 7px; background: var(--sap-bg);
+  font-size: 11px; line-height: 16px; color: var(--sap-fg-2);
+  --dsh-scrollbar-thumb: var(--sap-fg-3);
+  --dsh-scrollbar-thumb-hover: var(--sap-fg-2);
+}
+.sap-transcript-cap { font-weight: 600; color: var(--sap-fg-3); }
+.sap-msg { display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 6px; }
+.sap-msg > b { font-weight: 600; color: var(--sap-fg-3); }
+.sap-msg > span { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.sap-msg[data-role="user"] > b { color: var(--sap-accent); }
+.sap-msg[data-role="call"] > span,
+.sap-msg[data-role="result"] > span {
+  font-family: var(--ds-font-family-code, monospace); color: var(--sap-fg-3);
+}
 /* 告警文字:给底色 + 左边条,不再只靠颜色区分 —— 浅色主题下尤其要看得见。 */
 .sap-note {
   display: flex; gap: 6px; align-items: flex-start;
@@ -547,6 +569,27 @@ body:not([data-ds-dark-theme]) { --dsw-alias-state-warn-primary: #8a4700; }
 				return { input, output, cacheRead, cacheWrite, prompt, total, tps, fromHost: fromHost !== null };
 			}
 
+			/**
+			 * 投影里的只读会话转录 → 消息数组。
+			 *
+			 * 只认 `role` 与 `text` 两个字段:转录是**外部数据**(观察器折叠别的进程的会话日志),
+			 * 多出来的字段一概不往 DOM 上带。上限再夹一次(观察器已经封顶,这里防的是老/坏投影)。
+			 */
+			function transcriptOf(meta) {
+				const list = Array.isArray(meta?.transcript) ? meta.transcript : [];
+				const out = [];
+				for (const item of list) {
+					if (item === null || typeof item !== "object") continue;
+					const text = typeof item.text === "string" ? item.text : "";
+					if (text === "") continue;
+					out.push({
+						role: typeof item.role === "string" && item.role !== "" ? item.role : "text",
+						text,
+					});
+				}
+				return out.slice(-TRANSCRIPT_LIMIT);
+			}
+
 			/** 紧凑 token 数:517 / 12.2K / 517K / 1.2M(与宿主 UI 同口径)。 */
 			function fmtTokens(value) {
 				if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return "";
@@ -647,6 +690,8 @@ body:not([data-ds-dark-theme]) { --dsw-alias-state-warn-primary: #8a4700; }
 				? meta.recentLines.filter((line) => typeof line === "string").slice(-6)
 				: [],
 			resultPreview: typeof meta?.resultPreview === "string" ? meta.resultPreview : "",
+			// 只读预览窗的对话内容(观察器折叠外部会话日志得来;老投影没有 → 空数组,降级成 stderr 尾部)。
+			transcript: transcriptOf(meta),
 			updatedAt: typeof record.updatedAt === "number" ? record.updatedAt : 0,
 			activity: elapsed,
 			progressRatio: span > 0 ? Math.max(0, Math.min(1, elapsed / span)) : 0,
@@ -760,6 +805,8 @@ body:not([data-ds-dark-theme]) { --dsw-alias-state-warn-primary: #8a4700; }
 				exitCode: null,
 				recentLines: [],
 				resultPreview: "",
+				// 本机子代理是同进程会话,点开就是普通会话(宿主自己的入口),不需要只读转录。
+				transcript: [],
 				updatedAt: typeof record?.updatedAt === "number" ? record.updatedAt : 0,
 				activity: 0,
 				progressRatio: 0,
@@ -824,6 +871,7 @@ body:not([data-ds-dark-theme]) { --dsw-alias-state-warn-primary: #8a4700; }
 		fmtAgo,
 		fmtBytes,
 		usageOf,
+		transcriptOf,
 		fmtTokens,
 		cacheHitPercent,
 		sumUsage,
@@ -1245,7 +1293,27 @@ body:not([data-ds-dark-theme]) { --dsw-alias-state-warn-primary: #8a4700; }
 					entry.error !== ""
 						? jsxs("div", { className: "sap-note", "data-tone": "err", children: [jsx("span", { children: "⚠" }), jsx("span", { children: entry.error })] })
 						: null,
-					entry.recentLines.length > 0
+					// 只读会话转录:预览窗的主体内容。
+					// 运行中的外部会话**不能**像普通会话那样打开(打开 = 宿主接管写权、写坏它的日志),
+					// 所以这里是唯一能看见"它在对话里说了什么"的地方;全部内容都只渲染文本,没有任何写入口。
+					entry.transcript.length > 0
+						? jsxs("div", {
+							className: "sap-transcript",
+							children: [
+								jsx("div", { className: "sap-transcript-cap", children: "会话转录(只读)" }),
+								entry.transcript.map((message, index) => jsxs("div", {
+									className: "sap-msg",
+									"data-role": message.role,
+									children: [
+										jsx("b", { children: TRANSCRIPT_ROLE_LABELS[message.role] ?? message.role }),
+										jsx("span", { children: message.text }),
+									],
+								}, index)),
+							],
+						})
+						: null,
+					// 老投影没有转录字段时,退回原来的 stderr 尾部(别让预览窗突然空掉)。
+					entry.transcript.length === 0 && entry.recentLines.length > 0
 						? jsx("div", {
 							className: "sap-log",
 							children: entry.recentLines.map((line, index) => jsx("span", { className: "sap-log-line", children: line }, index)),
@@ -1297,7 +1365,7 @@ body:not([data-ds-dark-theme]) { --dsw-alias-state-warn-primary: #8a4700; }
 							className: "sap-note",
 							children: [
 								jsx("span", { children: "◈" }),
-								jsx("span", { children: "任务由独立进程持有,此处显示它的实时输出;会话转录不会随外部进程增长。" }),
+								jsx("span", { children: "任务由独立进程持有,不能直接打开(打开会让宿主接管写权)。此处只读显示它的会话转录,由观察器折叠会话日志,数秒内刷新一次。" }),
 							],
 						})
 						: null,
