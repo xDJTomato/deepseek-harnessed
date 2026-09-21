@@ -54,7 +54,9 @@ writeFileSync(join(probeDir, 'task.json'), JSON.stringify({
 	workspace: 'D:\\observer-selftest',
 	startedAt: new Date().toISOString(),
 }, null, 2));
-writeFileSync(join(probeDir, 'meta.json'), JSON.stringify({ sessionId, phase: 'running' }, null, 2));
+writeFileSync(join(probeDir, 'meta.json'), JSON.stringify({
+	sessionId, phase: 'running', provider: 'rigol', model: 'deepseek-v4.1-flash', reasoningEffort: 'high',
+}, null, 2));
 
 // 手动再跑一轮 tick(插件每秒自己也会跑,这里直接等)
 await new Promise((done) => setTimeout(done, 300));
@@ -77,6 +79,14 @@ const checks = [
 	['捕获到 api-session/status(running=true)', status?.args[0] === sessionId && status?.args[1] === true],
 	['写了 observer.log', existsSync(logPath)],
 ];
+
+// 悬浮卡片要显示"这次 dsh_task 调用实际用的模型":值取自任务现场的 meta.json
+// (runner 建会话时就写好了 —— 调用方省略 model/provider 时它也已经解析成真实值)。
+const modelMeta = added?.args[0]?.projections?.values?.['dsh-subagent'];
+checks.push(['投影带出实际生效的模型/服务商/推理档(meta.json 优先)',
+	modelMeta?.model === 'deepseek-v4.1-flash' && modelMeta?.provider === 'rigol'
+	&& modelMeta?.reasoningEffort === 'high',
+	JSON.stringify({ model: modelMeta?.model, provider: modelMeta?.provider, effort: modelMeta?.reasoningEffort })]);
 
 // 心跳:桥接层用它判断"有没有带监控的 GUI 宿主在跑",从而决定要不要拉起 DSH Desktop。
 const heartbeatPath = join(home, 'subagent', 'state', 'observer-heartbeat.json');
@@ -111,6 +121,11 @@ const ghostAdded = emitted.find((item) => item.event === 'api-session/added'
 checks.push(['僵尸任务(进程已死)不被标为运行中', ghostAdded !== undefined && ghostAdded.args[0].running === false]);
 checks.push(['僵尸任务没发出 running=true', !emitted.some((item) => item.event === 'api-session/status'
 	&& item.args[0] === ghostSession && item.args[1] === true)]);
+// 两个文件都没有模型信息:必须如实是 null(不是 undefined,也不要瞎猜一个)
+const ghostMeta = ghostAdded?.args[0]?.projections?.values?.['dsh-subagent'];
+checks.push(['两个文件都没写模型时投影是 null(卡片据此显示「默认」)',
+	ghostMeta?.model === null && ghostMeta?.provider === null && ghostMeta?.reasoningEffort === null,
+	JSON.stringify({ model: ghostMeta?.model, provider: ghostMeta?.provider, effort: ghostMeta?.reasoningEffort })]);
 rmSync(ghostDir, { recursive: true, force: true });
 
 // 模拟任务结束:改成 ok,应当发出 running=false
@@ -181,6 +196,10 @@ const nopidTask = (startedAt) => JSON.stringify({
 	id: 'observertest-000000-33333333',
 	status: 'running',
 	workspace: 'D:\\observer-selftest',
+	// meta.json 里没有模型信息 → 只能退回 task.json 的"请求值"(调用方自己指定时才有)
+	provider: 'caller-asked-provider',
+	model: 'caller-asked-model',
+	reasoningEffort: 'low',
 	startedAt,
 }, null, 2);
 writeFileSync(join(nopidFreshDir, 'task.json'), nopidTask(new Date().toISOString()));
@@ -191,6 +210,12 @@ const freshProjection = emitted.filter((item) => item.event === 'api-session/add
 	&& item.args[0]?.sessionId === nopidFresh).at(-1);
 checks.push(['刚起、还没写 pid 的任务仍算在跑(起进程的窗口要信)',
 	freshProjection?.args[0]?.projections?.values?.['dsh-subagent']?.running === true]);
+// meta.json 里没有模型信息时的退路:用 task.json 记的"请求值"(桥接层写的)
+const fallbackMeta = freshProjection?.args[0]?.projections?.values?.['dsh-subagent'];
+checks.push(['meta.json 没写模型时退回 task.json 的请求值',
+	fallbackMeta?.model === 'caller-asked-model' && fallbackMeta?.provider === 'caller-asked-provider'
+	&& fallbackMeta?.reasoningEffort === 'low',
+	JSON.stringify({ model: fallbackMeta?.model, provider: fallbackMeta?.provider, effort: fallbackMeta?.reasoningEffort })]);
 
 writeFileSync(join(nopidFreshDir, 'task.json'), nopidTask(new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()));
 await new Promise((done) => setTimeout(done, tickMs));

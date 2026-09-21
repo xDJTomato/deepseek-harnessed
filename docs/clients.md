@@ -10,8 +10,33 @@ MCP server 统一叫 **`dsh`**,所以各家的工具名形如:
 | Claude Code | `mcp__dsh__dsh_task` |
 | Cursor / Codex / 其它 | `dsh.dsh_task` |
 
-暴露五个工具:`dsh_task`(委托)、`dsh_task_status`(查/继续等)、`dsh_task_cancel`(优雅取消)、
-`dsh_task_kill`(强制终止)、`dsh_health`(探活)。语义见 [README §2](../README.md#2-对外暴露的五个-mcp-工具)。
+暴露六个工具:`dsh_task`(委托)、`dsh_task_status`(查/继续等)、`dsh_task_cancel`(优雅取消)、
+`dsh_task_kill`(强制终止)、`dsh_health`(探活:含已接入模型与模型策略文件)、`dsh_setup`(首次接入落盘默认模型)。
+语义见 [README §2](../README.md#2-对外暴露的六个-mcp-工具)。
+
+---
+
+## 0. 外部 agent 第一次调用会看到什么
+
+**第一次调用(这个实例还没人指定过默认模型)时**,`dsh_health` 的输出末尾与 `dsh_task` 的返回值
+末尾都会多出一段 6 行的「**首次接入**」引导块。调用方 agent(你)按它走四步:
+
+1. **看清已接入模型**:`dsh_health` 的 `models.providers`(按 provider 分组)—— 权威来源是
+   `$DSH_HOME/settings.yaml` 的 `models` 数组,**不要凭记忆猜 id**。
+2. **请用户指定一个默认模型**:MCP server 自己不能跟用户对话,所以这一步只能由你转达
+   (把候选模型列给用户挑)。
+3. **落盘**:`dsh_setup(default_model: "<模型 id>")`,或直接用预设 `dsh_setup(preset: "本项目方案")`。
+   用没接入的 id 会被拒绝并列出可用清单(重新问用户即可)。
+4. **把策略文件链接给用户**:引导块里有 `fileUrl`(`file:///…/config/model-policy.md`),
+   告诉用户「这里面的模型选择规则你可以自己改」—— 改完立刻生效,不用重启任何东西。
+
+**用户指定过之后**(策略文件里 `默认模型:` 有值)这段引导**不再出现**,`dsh_health` 的
+`modelPolicy.defaultModel` 就是那把口径。日常派活时按策略文件的口径传 `dsh_task` 的 `model`;
+`model` 传错是**响亮失败**(`UNKNOWN_MODEL`),不会静默退回默认模型。
+
+> 之后想改口径:直接编辑 `~/.dsh/subagent/config/model-policy.md`(人可读的「预设方案」/「模型选择规则」),
+> 或让 agent 再调一次 `dsh_setup`。文件位置可用 `DSH_SUBAGENT_POLICY` 覆写(见
+> [configuration.md §1.5](./configuration.md#15-模型策略选择模型的口径))。
 
 ---
 

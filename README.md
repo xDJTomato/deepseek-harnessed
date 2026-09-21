@@ -11,7 +11,7 @@ Gemini CLI / Antigravity / Kiro / Qoder / VS Code(Copilot)/ opencode** 调用的
 
 | 部分 | 位置 | 作用 |
 | --- | --- | --- |
-| **MCP 桥接层** | `bin/` + `lib/` | 一个 stdio MCP server,暴露 `dsh_task` 等五个工具;每个任务拉起一个独立的 DSH 进程 |
+| **MCP 桥接层** | `bin/` + `lib/` | 一个 stdio MCP server,暴露 `dsh_task` 等六个工具;每个任务拉起一个独立的 DSH 进程 |
 | **DSH `subagent` profile** | `profile/` | 让这个 DSH 进程成为"一次会话、无人值守、只做叶子"的执行体 |
 | **GUI 宿主插件** | `monitor/` + `gui/` | 观察器把外部任务的实时状态灌进会话投影;悬浮卡片按调用方分组显示 |
 
@@ -177,7 +177,7 @@ node $env:USERPROFILE\.dsh\subagent\test\usage-fold-probe.mjs --all
 
 ---
 
-## 2. 对外暴露的五个 MCP 工具
+## 2. 对外暴露的六个 MCP 工具
 
 服务器名统一叫 **`dsh`**,因此在各 harness 里工具名形如
 `mcp__dsh__dsh_task`(Claude Code)或 `dsh.dsh_task`(Codex/Cursor)。
@@ -188,7 +188,8 @@ node $env:USERPROFILE\.dsh\subagent\test\usage-fold-probe.mjs --all
 | `dsh_task_status` | 查询/继续等待某个 job;带上 `expected_seconds` / `deadlineAt` / `remainingSeconds`、**`process_tree`**(实时后代进程数 + 整树 CPU)与 **`recent_activity`**(子代理此刻在干什么);`ok` 时一并返回 DSH 的最终答复全文 |
 | `dsh_task_cancel` | **优雅取消**:标记取消并请求停下,让任务自己收尾 |
 | `dsh_task_kill` | **强制终止**:按 `job_id` 或按 `caller`(停掉"我起的全部任务")立刻杀掉整个 DSH 进程树;**杀掉是验证过的**(不属于本进程的任务走 `taskkill` 并检查退出码,失败如实报 `killed:false` 而不是谎报成功);回报杀了哪些、哪些已经结束 |
-| `dsh_health` | 探活:回报解析到的 dsh 启动器、DSH_HOME、默认工作空间、默认模型、**每个调用方的并发数**、**每个实时任务的截止/进度**、最近任务 |
+| `dsh_health` | 探活:回报解析到的 dsh 启动器、DSH_HOME、默认工作空间、默认模型、**每个调用方的并发数**、**每个实时任务的截止/进度**、最近任务,以及**这个实例已接入的模型**(`models`:按 provider 分组、含 `defaultModel` 与枚举失败的 `error`)与**模型策略文件**(`modelPolicy.path` / `fileUrl` / `defaultModel` / `presets`) |
+| `dsh_setup` | **首次接入**用:把用户指定的默认模型落盘到**用户可编辑的策略文件**(`config/model-policy.md`)—— **只改 `默认模型:` 那一行**,其余内容与用户改动一律保留。三种用法:`default_model`(必须是本实例**已接入**的模型,裸 id 或 `provider/id`)、`preset`(如 `本项目方案`)、`policy_markdown`(整体替换正文)。写错会被拒绝(`isError:true`)并**列出可用模型清单** |
 
 `dsh_task` 的参数:
 
@@ -200,7 +201,7 @@ node $env:USERPROFILE\.dsh\subagent\test\usage-fold-probe.mjs --all
 | `workspace` | 目标工作空间绝对路径;缺省取调用方工作空间(MCP roots),再缺省取 server cwd |
 | `wait_seconds` | 本次调用最多阻塞多久,默认 **45**(短超时,**推荐直接省略**);`0` = 立刻返回 job_id(不推荐:等于把一次调用拆成多次轮询)。**不要传 >60** —— 多数 harness 的单次工具超时就 60s(见 §2.3) |
 | `timeout_seconds` | **外层**绝对墙钟上限,默认 1800;比 `expected_seconds` 的硬截止更宽松,两道闸门都生效 |
-| `model` / `provider` | 单次调用换模型/服务商,**取值必须是本机 DSH 里已配置的**:模型见 `$DSH_HOME/settings.yaml` 的 `llm-pi-ai.providers.<provider>.models[].id`(或 `llm-deepseek.models[]`),provider 见同一份文件里的 providers 键;本机当前是 `rigol` / `deepseek-v4.1-flash`。默认沿用 DSH 设置里的模型。写错**不会静默回退**(`UNKNOWN_MODEL` / `NO_ADAPTER`) |
+| `model` / `provider` | 单次调用换模型/服务商。**可用模型与选择口径都不写死在文档里**:`dsh_health` 的 `models.providers` 是这个 DSH 实例**已接入**的模型清单(权威来源 `$DSH_HOME/settings.yaml` 里 `models` 数组声明的 id),「什么时候用哪个模型」写在**用户可编辑的策略文件** `config/model-policy.md` 里(路径与 `file:///` 链接见 `dsh_health` 的 `modelPolicy`;想一键切到预设用 `dsh_setup(preset: "本项目方案")`,首次接入的落盘见 §2.4)。省略 `model` 即沿用 DSH 设置里的默认模型;`provider` 一般省略。写错**不会静默回退**(`UNKNOWN_MODEL` / `NO_ADAPTER`) |
 | `reasoning_effort` | 单次调用改推理强度,取值以该 provider/model 在 DSH 里**声明的档位**为准(`settings.yaml` 的 `models[].reasoningEfforts`,常见档位 `off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`)。模型没声明的档位**不会静默降级**,DSH 直接以 `UNSUPPORTED_REASONING_EFFORT` 快速失败(约 0.5 秒、不调模型)。省略则沿用 DSH 设置里的默认档位。结果头部的 `model:` 与 `reasoning_effort:` 会回显本次真实生效的取值,便于复核 |
 | `permission` | `read-only` / `workspace-write` / `danger-full-access`,默认 `danger-full-access` |
 | `raw_prompt` | `true` 时不加「委托说明」前言,原样传递 |
@@ -227,8 +228,9 @@ node $env:USERPROFILE\.dsh\subagent\test\usage-fold-probe.mjs --all
 | 位置 | 内容 |
 | --- | --- |
 | `initialize.instructions` | 委派操作手册浓缩版(≤1500 字符):先估时长 → 写可机检验收 → **先让 dsh_task 自己等(短超时),超时才轮询** → 状态语义 → 如何止损 → 失败排查 → 禁止项(MCP 规范支持,harness 会把它当系统提示) |
-| `dsh_task.description` | 完整手册(约 1800 字符):硬承诺与经验值区间(单文件小改 60~180s / 多文件小特性 300~900s / 大重构 900~1800s 且应拆分)、`deadlineAt = 开始时刻 + expected_seconds × grace`、**七种状态各自的语义与补救动作**、失败时按 `recent_activity` → `progress_bytes`/`last_progress_at` → 任务现场三处排查、以及两条禁止项(>20 分钟的任务必须拆、`permission` 收窄时不要让子代理用 pwsh 写文件) |
-| 各字段 `description` | `expected_seconds` 写明"硬承诺 + 到点杀进程树 + 经验值区间";`acceptance` 写明"一句话、可判定真伪"并给出正例;`wait_seconds` 写明"默认 45 短超时、推荐省略、到点没结束才用 dsh_task_status(wait_seconds=30) 轮询、别传 0 也别传 >60";`permission` 写明受限档位下请用 write/edit 文件工具;`timeout_seconds`/`model`/`provider`/`reasoning_effort`/`raw_prompt`/`label` 各自说明取舍(`model`/`provider`/`reasoning_effort` 写明取值必须来自本机已配置的模型 / 已注册的 provider / 该模型已声明的档位,写错即 `UNKNOWN_MODEL` / `NO_ADAPTER` / `UNSUPPORTED_REASONING_EFFORT`) |
+| `dsh_task.description` | 完整手册(约 2400 字符):硬承诺与经验值区间(单文件小改 60~180s / 多文件小特性 300~900s / 大重构 900~1800s 且应拆分)、`deadlineAt = 开始时刻 + expected_seconds × grace`、**七种状态各自的语义与补救动作**、失败时按 `recent_activity` → `progress_bytes`/`last_progress_at` → 任务现场三处排查、**【模型选择:以策略文件为准】**的四步流程(看清已接入模型 → 请用户指定 → `dsh_setup` 落盘 → 把策略文件链接给用户),以及两条禁止项(>20 分钟的任务必须拆、`permission` 收窄时不要让子代理用 pwsh 写文件) |
+| 各字段 `description` | `expected_seconds` 写明"硬承诺 + 到点杀进程树 + 经验值区间";`acceptance` 写明"一句话、可判定真伪"并给出正例;`wait_seconds` 写明"默认 45 短超时、推荐省略、到点没结束才用 dsh_task_status(wait_seconds=30) 轮询、别传 0 也别传 >60";`permission` 写明受限档位下请用 write/edit 文件工具;`timeout_seconds`/`model`/`provider`/`reasoning_effort`/`raw_prompt`/`label` 各自说明取舍(`model` 写明**取值以策略文件为准、不在这里写死**:先看 `dsh_health.models`,口径见 `config/model-policy.md`,并保留"写错 id → `UNKNOWN_MODEL`、不回退"的失败语义,`provider`/`reasoning_effort` 写明取值必须来自已注册的 provider / 该模型已声明的档位,写错即 `UNKNOWN_MODEL` / `NO_ADAPTER` / `UNSUPPORTED_REASONING_EFFORT`) |
+| `dsh_setup.description` | 三种用法(`default_model` / `preset` / `policy_markdown`)与"**只改** `默认模型:` 那一行、其余内容与用户改动**一律保留**",并点明"MCP server 不能直接跟用户对话,先按返回的「首次接入」引导去问用户" |
 | `dsh_task_status.description` | 逐字段解释 `progress_bytes` / `last_progress` / `recent_activity` / `process_tree` / `silent_seconds`,并说明"静默但在干活不算停滞" |
 | `dsh_task_kill` / `dsh_task_cancel.description` | 两种模式(按 `job_id` / 按 `caller`)与"什么时候该止损(任务跑偏、deadline 将近仍无进展)" |
 | `dsh_health.description` | `liveTasks` / `activeByCaller` / 看门狗阈值 / `monitorHost` 各字段含义与三种使用场景 |
@@ -310,6 +312,36 @@ DSH_SUBAGENT_STATUS_WAIT_SECONDS=540   # dsh_task_status 的默认等待
 > 环境变量都在那一刻定型 —— 换过 `DSH_SUBAGENT_WAIT_SECONDS` 这类环境变量、或升级过
 > 桥接层本体之后,要重启对应 harness(Cursor / Codex / Claude Code)才会生效。
 
+### 2.4 模型口径:首次接入引导 + 用户可编辑的策略文件
+
+**为什么要这样**:旧口径把"只允许传这两种模型"写死在 `dsh_task` 的描述里,换一台机器、
+换一个 DSH 实例就可能全是错的(模型清单来自 `$DSH_HOME/settings.yaml`,每个实例都不一样)。
+现在模型清单**动态枚举**、选择口径**落在用户能改的文件里**。
+
+| 环节 | 是什么 |
+| --- | --- |
+| 已接入模型 | `dsh_health` 的 `models:{ providers:{ rigol:[…] }, defaultModel, error }` —— 只从 `$DSH_HOME/settings.yaml` 的 `llm-pi-ai.providers.<provider>.models` / `llm-deepseek.models` 这两个**方括号数组**里取 `id`(不扫全文件);文件缺失或形状不认识时**不抛异常**,把原因放进 `error` |
+| 策略文件 | `~/.dsh/subagent/config/model-policy.md`(**可以随便改**):顶部一行机器可读的 `默认模型: <模型 id>`,`## 预设方案` 下一套套 `### <名字>` + `预设默认模型: <模型 id>`,`## 模型选择规则` 是给人看的正文。桥接层**每次调用都重读**,改完不用重启;路径可用 `DSH_SUBAGENT_POLICY` 覆写 |
+| 链接 | `dsh_health` 的 `modelPolicy.path` / `modelPolicy.fileUrl`(形如 `file:///C:/Users/…/model-policy.md`)—— 这就是给用户的"链接" |
+| 预设方案 | 至少一套 `### 本项目方案`(当前项目自己的口径):默认任务 `deepseek-v4.1-flash`、文档书写类 `gemini-3.7-flash`、过于复杂或强视觉的任务**不派给 DSH** 由主模型自己做 |
+
+**首次接入(MCP server 不能跟用户对话,所以由调用方 agent 转达)**:当策略文件里还是
+`默认模型: (未指定)` 时,`dsh_task` 的返回值与 `dsh_health` 的输出末尾各会带一段**紧凑(6 行)**
+引导,四要素齐备 —— ① 先用 `dsh_health` 看清已接入模型;② **请用户指定一个默认模型**;
+③ 用 `dsh_setup` 落盘;④ 把策略文件链接给用户,说明规则用户可以自己改。用户指定过
+(`默认模型:` 有值)**之后就不再出现**(策略文件是全局的,不按 caller 记状态)。
+
+```jsonc
+// 落盘:只改策略文件里 `默认模型:` 那一行,其余内容与用户改动一律保留
+{ "name": "dsh_setup", "arguments": { "default_model": "deepseek-v4.1-flash" } }   // 已接入的模型,裸 id 或 provider/id
+{ "name": "dsh_setup", "arguments": { "preset": "本项目方案" } }                     // 用预设里声明的模型
+{ "name": "dsh_setup", "arguments": { "policy_markdown": "…" } }                    // 整体替换正文(必须保留 `默认模型:` 行)
+```
+
+> 传一个本实例没接入的 id → `isError:true` 且**把可用模型清单打出来**(调用方据此重新问用户);
+> `default_model: 3` 这种类型错 → `isError:true` 并点名参数名。这两条与
+> `model` / `provider` / `reasoning_effort` 的"响亮失败"是同一个口径。
+
 ## 3. 本机已写入的配置
 
 | Harness | 配置文件 | 写入内容 |
@@ -377,7 +409,9 @@ llm-pi-ai:
   显式传 `--reasoning-effort high` 会直接报 `UNSUPPORTED_REASONING_EFFORT`);
   `reasoning` 决定"没人指定时默认发什么"。路由级 `reasoning` 就是本次要的"固定为 high"。
 - settings 是**每次操作重新读取**的:改完立刻生效,不用重启 DSH Desktop。
-- 想让某一轮更省或更狠:单次调用用 `dsh_task` 的 `model` 换模型,或
+- 想让某一轮更省或更狠:单次调用用 `dsh_task` 的 `model` 按**策略文件的口径**切换
+  (见 `~/.dsh/subagent/config/model-policy.md` 的「本项目方案」:默认 `deepseek-v4.1-flash`、
+  文档书写 `gemini-3.7-flash`;可用模型以 `dsh_health.models` 为准),或
   `dsh --profile subagent --reasoning-effort low --prompt ...`,都在同一份 `reasoningEfforts`
   声明的范围内(唯一例外是 `off` 也必须先声明 —— 否则被当成"不支持")。
 - 本机的 `vision-toolkit`、以后新增的 provider 都可以照这套写。
@@ -914,6 +948,13 @@ URL 里的 rev 可能还是旧的 ⇒ 浏览器**不会回源**,这时按一次 
 元数据写进会话的**投影值** `projectionValues['dsh-subagent']`,客户端列表快照本来就带投影,
 卡片读它即可(所以卡片和侧边栏永远一致,不需要第二条通道)。
 
+投影里除了任务现场本身的字段,还带**这次调用实际生效的模型** `model` / `provider` /
+`reasoningEffort`:取值优先 `state/tasks/<job-id>/meta.json`(DSH runner 一建会话就写,
+调用方省略 `model`/`provider` 时它也已经解析成真实值 —— 实测样本 `provider: "rigol"`、
+`model: "deepseek-v4.1-flash"`),meta 没有才退回 `task.json`(桥接层记的"请求值",
+调用方没指定时是 `null`)。两个来源都没有就是 `null`。卡片上:列表行显示一行模型 chip
+(未知写「默认」),详情页的行式区写「模型 / 服务商 / 推理档」——后两行仅在有值时出现。
+
 **装了哪些文件**:
 
 - `~/.dsh/subagent/gui/package.json` + `gui/lib/index.js`(宿主半边,空实现)+
@@ -930,7 +971,9 @@ DSH Desktop**。两者都做过之后,以后任何调用方拉起的任务都会
 
 ```powershell
 # 卡片逻辑(离线:假 window/__ModuleLoader__ + 迷你 React,真跑组件函数)
-node $env:USERPROFILE\.dsh\subagent\test\panel-selftest.mjs            # 117 项
+node $env:USERPROFILE\.dsh\subagent\test\panel-selftest.mjs            # 126 项
+# 观察器侧(隔离 DSH_HOME 造假任务现场,投影里带出 model/provider/reasoningEffort)
+node $env:USERPROFILE\.dsh\subagent\test\observer-selftest.mjs          # 38 项
 
 # 真实任务日志 → token 用量折叠(逐帧解 zstd;只读)
 node $env:USERPROFILE\.dsh\subagent\test\usage-fold-probe.mjs --all
@@ -1155,10 +1198,20 @@ harness 会把 MCP **子进程的 stderr 一律渲染成 warning/error**,所以�
 (Claude Code 的 `MCP_TOOL_TIMEOUT` 等)也要相应放大。
 
 **Q:怎么换模型?**
-按次:`dsh_task(model: "deepseek-v4.1-flash", provider: "rigol", reasoning_effort: "low")`
-或 `dsh-subagent -m <模型 id>`;取值必须是本机 DSH 里已配置的模型/已注册的 provider/该模型已声明的档位
-(见 §2 的参数表),写错是**响亮失败**(`UNKNOWN_MODEL` / `NO_ADAPTER` / `UNSUPPORTED_REASONING_EFFORT`)。
-全局:改 DSH 设置里的默认模型(设置 → 模型),子代理默认跟随。
+
+- **先看有哪些**:`dsh_health` 的 `models.providers` = 这个 DSH 实例**已接入**的模型(权威来源
+  `$DSH_HOME/settings.yaml` 的 `models` 数组,按 provider 分组)。别凭记忆猜 id。
+- **口径在策略文件里**(可编辑):`~/.dsh/subagent/config/model-policy.md`,里面的「预设方案」
+  与「模型选择规则」就是选择口径;`dsh_health` 的 `modelPolicy.path` / `fileUrl` 给出路径与链接。
+  首次接入(那行 `默认模型:` 还没填)时,`dsh_task` / `dsh_health` 的返回值会带一段四步引导:
+  看清已接入模型 → **请用户指定一个默认模型** → `dsh_setup` 落盘 → 把链接给用户(见 §2.4)。
+- **改口径**:直接编辑那个文件(桥接层每次调用都重读,**不用重启**),或让 agent 调
+  `dsh_setup(default_model: "…")` / `dsh_setup(preset: "本项目方案")` —— 只改 `默认模型:` 那一行。
+- **按次**:`dsh_task(model: "gemini-3.7-flash", provider: "rigol", reasoning_effort: "high")`
+  或 `dsh-subagent -m <模型 id>`(取值同样以这个实例的已接入模型为准);provider 必须是已注册的
+  (`rigol`)、档位必须是该模型已声明的
+  (见 §2 的参数表),写错是**响亮失败**(`UNKNOWN_MODEL` / `NO_ADAPTER` / `UNSUPPORTED_REASONING_EFFORT`)。
+- **全局**:改 DSH 设置里的默认模型(设置 → 模型),子代理默认跟随。
 
 **Q:外部任务能不能自己再派子代理?**
 不能(叶子闸门,§4.1)。由其它 harness 经 `dsh_task` 调进来的 DSH 实例,工具表里没有
@@ -1181,17 +1234,19 @@ DSH 父会话回答完**不会**杀掉子代理(杀了等于丢工作),它们会
 ├── install.mjs               幂等装配器(--dry-run / --only=…)
 ├── uninstall.mjs             摘除所有 harness 里的 dsh 注册
 ├── profile/                  DSH profile 源文件(install 会同步到 $DSH_HOME/profiles/subagent)
+├── config/
+│   └── model-policy.md       模型策略(**用户可以随便改**:默认模型 + 预设方案 + 模型选择规则;dsh_setup 落盘到这里)
 ├── lib/
 │   ├── launcher.mjs          定位并解析本机 dsh 启动器(直接 spawn exe,绕开 cmd 转义)
 │   ├── tasks.mjs             任务生命周期:启动 / 等待 / 查询 / 取消 / 强杀 / 硬截止 / 停滞看门狗 / 并发闸门
-│   ├── mcp.mjs               MCP stdio server 与五个工具的实现在此(工具定义里的委派手册也在这)
+│   ├── mcp.mjs               MCP stdio server 与六个工具的实现在此(工具定义里的委派手册也在这)
 │   ├── monitor-host.mjs      监控窗口自动拉起(三步判活:心跳+pid 存活 / 残留不采信 / 命令行分类拦第二个 GUI)
 │   └── util.mjs              路径、JSON、裁剪、进程存活等小工具
 ├── bin/
 │   ├── dsh-subagent.mjs      CLI:任何 harness 都能 shell 调用
 │   └── dsh-subagent-mcp.mjs  MCP server 入口
 ├── test/
-│   ├── selftest.mjs          协议级端到端自检(53 项)
+│   ├── selftest.mjs          协议级端到端自检(98 项:含模型枚举口径、策略文件链接与预设、首次接入引导块、dsh_setup 落盘/拒绝路径、隔离 DSH_HOME 的 decoy)
 │   ├── monitor-autostart-probe.mjs 监控窗口自动拉起自检(26 项,假 exe + 临时 DSH_HOME)
 │   ├── ledger-liveness-probe.mjs   台账幽灵记录自检(20 项,临时 DSH_HOME 造假台账)
 │   ├── e2e-harness.mjs       验收脚本:让每个 harness 自己委托一次并核对产物
@@ -1267,4 +1322,7 @@ Cursor 各委托一次,并核对 DSH 是否真的按内容要求写出了文件)
 | 新版客户端接入点审计 | 临时 web 实例上取组合 bundle(11.2MB) | ✅ 6/6 仍在:`shell.overlay` / `subagentsByParent` / `projectionValues` / `sessions.open` / `useSessions` / `__ModuleLoader__`;启动图 10/10,卡片 rev `36bac599d008e66e-45` |
 | 上游 lsp 缺陷影响面 | `desktop` profile `--dump-config` + 宿主日志 | ✅ 桌面宿主**不受影响**(没有 `lsp-stdio`/`tool-lsp` 这两行,日志无 `assertNever`);只有 `web` 这类 profile 起不来,已给出两行 overlay 的绕开办法 |
 | MCP 连接不再产生 warning | 手工握手 + 读 Cursor `mcpprocess.log` | ✅ server 正常启动 **stderr 0 字节**;原先 `[warning] [McpProcess stderr] ERR dsh-subagent: MCP stdio server ready …` 不再出现;`DSH_SUBAGENT_DEBUG=1` 时横幅与正确版本号(来自 `package.json`)才出现 |
+| **模型传参口径收敛为"只允许推荐的两种"** | `npm run test:all` 里的 `selftest.mjs`(真跑 MCP 握手后读工具定义) | ✅ 61/61 全绿(0 ❌)。工具描述【模型选择】与 `model` 字段口径一致:都写明**只允许** `deepseek-v4.1-flash`(默认)/ `gemini-3.7-flash`(文档书写),并保留"写错 id → `UNKNOWN_MODEL`、不回退"的失败语义;本机其它已配置模型明确标注"不要传"。README §2 参数表、§FAQ 同步改口径。**⚠️ 这一行的口径已被下一行取代**(模型清单不再写死在描述里) |
+| **卡片显示"这次调用实际用的模型"** | `node test/observer-selftest.mjs`(38 项)+ `node test/panel-selftest.mjs`(126 项) | ✅ 全绿(0 ❌)。观察器:投影带出 `model`/`provider`/`reasoningEffort` 且 **meta.json 优先**(`deepseek-v4.1-flash` / `rigol` / `high`)、meta 没写就退回 `task.json` 的请求值、两个文件都没有时如实是 `null`。面板:列表行显示模型 chip(两条记录都渲染出 `deepseek-v4.1-flash`)、详情页有「模型 / 服务商 / 推理档」三行(后两行仅在有值时出现)、**没有这三个字段的老投影照常渲染**且写「默认」、渲染结果里不出现 `undefined`/`null` 字样 |
+| **模型口径改为「首次接入引导 + 用户可编辑策略文件 + 本项目预设」** | `npm run test:all`(全套 10 个探针;`selftest.mjs` 真跑 MCP 握手 + 真派 3 次任务) | ✅ **365/365 全绿**(改前 328:launcher 13 + panel 126 + selftest 61 + observer 38 + ledger 20 + autostart 26 + leaf 14 + exec 11 + wait 11 + monitor-live 8;`selftest.mjs` 61 → **98**,新增 37 条断言,0 ❌)。新口径:**模型清单不再写死在工具描述里** —— `dsh_health.models` 只从 `$DSH_HOME/settings.yaml` 的 `llm-pi-ai.providers.<route>.models` / `llm-deepseek.models` 两个方括号数组取 id(本机 `rigol` 43 个,含 `deepseek-v4.1-flash` / `gemini-3.7-flash`,顺序与去重按文件核对;非模型的 `id:` 用临时 DSH_HOME 里的合成 fixture 钉住);策略文件 `config/model-policy.md` 暴露 `modelPolicy.path` / `fileUrl`(`file:///…`)与 `presets`(含`本项目方案`);未指定默认模型时 `dsh_health` 与**真跑的 `dsh_task` 返回值**里都带 6 行「首次接入」引导块(四要素:已接入模型 / 请用户指定 / `dsh_setup` / 策略文件链接),`dsh_setup(default_model:)` 落盘后**引导块消失**且策略文件只改了 `默认模型:` 那一行;`dsh_setup` 的拒绝路径(未接入模型 / 不存在的预设 / 类型不对 / 无参 / `settings.yaml` 缺失)**全部 `isError:true` 并列出可用清单**且不动文件 |
 

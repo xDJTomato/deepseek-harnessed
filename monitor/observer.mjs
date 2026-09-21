@@ -566,6 +566,18 @@ function start(ctx) {
 			found.set(sessionId, {
 				running: stillRunning,
 				cwd: typeof task.workspace === 'string' ? task.workspace : '',
+				// 这次调用**实际生效**的模型信息:meta.json(runner 建会话时就写好了)优先 ——
+				// 调用方省略 model/provider 时它也已经解析成真实值;meta 没有才退回 task.json
+				// (桥接层记的是"请求值",调用方没指定时是 null)。未知一律归一成 null。
+				model: typeof meta?.model === 'string' && meta.model !== ''
+					? meta.model
+					: typeof task.model === 'string' && task.model !== '' ? task.model : null,
+				provider: typeof meta?.provider === 'string' && meta.provider !== ''
+					? meta.provider
+					: typeof task.provider === 'string' && task.provider !== '' ? task.provider : null,
+				reasoningEffort: typeof meta?.reasoningEffort === 'string' && meta.reasoningEffort !== ''
+					? meta.reasoningEffort
+					: typeof task.reasoningEffort === 'string' && task.reasoningEffort !== '' ? task.reasoningEffort : null,
 				jobId: entry,
 				status: String(task.status ?? ''),
 				at: Number.isFinite(startedAt) ? startedAt : Date.now(),
@@ -711,6 +723,10 @@ function start(ctx) {
 								caller: info.caller,
 								callerLabel: info.callerLabel,
 								workspace: info.cwd,
+								// 卡片上显示的模型标识:实际生效的 model/provider/推理档(null = 未知)。
+								model: info.model,
+								provider: info.provider,
+								reasoningEffort: info.reasoningEffort,
 								status: info.status,
 								running: info.running,
 								label: info.label,

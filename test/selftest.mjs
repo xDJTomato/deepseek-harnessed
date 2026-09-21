@@ -11,7 +11,8 @@
  * @module dsh-subagent/test/selftest
  */
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import process from 'node:process';
 import { BRIDGE_ROOT } from '../lib/util.mjs';
@@ -102,6 +103,24 @@ function textOf(result) {
 	return (result?.content ?? []).filter((part) => part.type === 'text').map((part) => part.text).join('\n');
 }
 
+/** 取 dsh_health 那段 ```json 载荷。 */
+function payloadOf(text) {
+	return JSON.parse(/```json\n([\s\S]*?)\n```/.exec(text ?? '')?.[1] ?? '{}');
+}
+
+/**
+ * 自检侧的**独立**实现(刻意不复用 server 的解析):只从 `llm-pi-ai` 段的 models 数组里取 id,
+ * 用来交叉核对 server 那边枚举出来的顺序与去重。
+ */
+function installedModelIds() {
+	const home = process.env.DSH_HOME ?? join(homedir(), '.dsh');
+	const text = readFileSync(join(home, 'settings.yaml'), 'utf8');
+	const start = text.indexOf('llm-pi-ai:');
+	const end = text.indexOf('agent-default-model:');
+	const section = start < 0 ? '' : text.slice(start, end > start ? end : undefined);
+	return [...section.matchAll(/\bid:\s*([^\s,}\]]+)/g)].map((match) => match[1]);
+}
+
 async function main() {
 	process.stdout.write(`自检工作空间: ${workspace}\n\n`);
 	rmSync(workspace, { recursive: true, force: true });
@@ -109,7 +128,18 @@ async function main() {
 
 	// 自检**绝不能**真的拉起 GUI:自动拉起的三种行为由 test/monitor-autostart-probe.mjs 用假 exe 覆盖,
 	// 这里只验证"接线"(字段有没有出现在结果里),所以显式关掉总开关。
-	const client = new Client(process.execPath, [MCP_ENTRY], { DSH_SUBAGENT_AUTOSTART_MONITOR: 'off' });
+	//
+	// 策略文件**隔离**:落盘断言一律打在临时副本上,绝不改仓库里那份 config/model-policy.md(发布物)。
+	// DSH_HOME 这里仍用**真实**的那份 —— 模型清单的权威来源就是 $DSH_HOME/settings.yaml,
+	// 隔离成空目录就枚举不到已接入模型了(隔离 DSH_HOME 的两条断言在 7b/7c 另起连接做)。
+	const scratch = mkdtempSync(join(tmpdir(), 'dsh-subagent-policy-'));
+	const policyPath = join(scratch, 'model-policy.md');
+	const shippedPolicy = readFileSync(join(BRIDGE_ROOT, 'config', 'model-policy.md'), 'utf8');
+	writeFileSync(policyPath, shippedPolicy, 'utf8');
+	const client = new Client(process.execPath, [MCP_ENTRY], {
+		DSH_SUBAGENT_AUTOSTART_MONITOR: 'off',
+		DSH_SUBAGENT_POLICY: policyPath,
+	});
 
 	// 1. 握手
 	const init = await client.request('initialize', {
@@ -137,7 +167,7 @@ async function main() {
 	// 2. 工具清单
 	const tools = await client.request('tools/list', {});
 	const names = (tools?.tools ?? []).map((tool) => tool.name);
-	check('tools/list 暴露 5 个工具', ['dsh_task', 'dsh_task_status', 'dsh_task_cancel', 'dsh_task_kill', 'dsh_health'].every((name) => names.includes(name)), names.join(', '));
+	check('tools/list 暴露 6 个工具', ['dsh_task', 'dsh_task_status', 'dsh_task_cancel', 'dsh_task_kill', 'dsh_health', 'dsh_setup'].every((name) => names.includes(name)), names.join(', '));
 	const taskTool = (tools?.tools ?? []).find((tool) => tool.name === 'dsh_task');
 	check('dsh_task 要求必填 expected_seconds', (taskTool?.inputSchema?.required ?? []).includes('expected_seconds'), JSON.stringify(taskTool?.inputSchema?.required ?? []));
 	// 2b. 委派建议必须写进工具定义本身(而不是只在 README 里)
@@ -158,8 +188,25 @@ async function main() {
 	check('reasoning_effort 字段写明档位来源与失败语义',
 		fieldOf('reasoning_effort').includes('reasoningEfforts') && fieldOf('reasoning_effort').includes('UNSUPPORTED_REASONING_EFFORT'),
 		fieldOf('reasoning_effort').slice(0, 60));
-	check('model 字段写明"必须是已配置的模型"与 UNKNOWN_MODEL',
-		fieldOf('model').includes('已配置') && fieldOf('model').includes('UNKNOWN_MODEL'), fieldOf('model').slice(0, 60));
+	// 模型口径:不再写死两个 id —— 以**用户可编辑的策略文件**为准 + 首次接入四步 + dsh_setup 落盘
+	// (旧口径是"只允许传下面这两种",把本机的模型清单写死在描述里,换机器/换实例必错)
+	check('模型口径指向策略文件 + dsh_health.models + dsh_setup',
+		[taskDesc, fieldOf('model')].every((text) => text.includes('model-policy') && text.includes('dsh_health') && text.includes('dsh_setup')),
+		fieldOf('model').slice(0, 80));
+	check('模型口径四步流程写进 dsh_task 描述',
+		['已接入模型', '请用户指定', 'dsh_setup'].every((key) => taskDesc.includes(key)), `${taskDesc.length} 字符`);
+	check('工具描述不再写死"只允许传下面这两种"',
+		!/只允许传下面这两种/.test(taskDesc) && !/只允许/.test(fieldOf('model')),
+		/【模型选择】[^\n]{0,50}/.exec(taskDesc)?.[0] ?? '(无【模型选择】段)');
+	check('model 字段写明写错 id → UNKNOWN_MODEL 且不回退',
+		fieldOf('model').includes('UNKNOWN_MODEL') && /不会回退|不回退/.test(fieldOf('model')), fieldOf('model').slice(0, 80));
+	const setupTool = (tools?.tools ?? []).find((tool) => tool.name === 'dsh_setup');
+	const setupDesc = String(setupTool?.description ?? '');
+	check('dsh_setup 暴露三个可选 string 参数',
+		['default_model', 'preset', 'policy_markdown'].every((name) => setupTool?.inputSchema?.properties?.[name]?.type === 'string'),
+		JSON.stringify(Object.keys(setupTool?.inputSchema?.properties ?? {})));
+	check('dsh_setup 描述写明"只改默认模型那一行、其余保留"与三种用法',
+		/default_model/.test(setupDesc) && /preset/.test(setupDesc) && /只改/.test(setupDesc) && /保留/.test(setupDesc), setupDesc.slice(0, 80));
 	check('model/provider 字段不再举不存在的模型名',
 		!/deepseek-v4-pro|claude-sonnet-4\.6/.test(`${fieldOf('model')}${fieldOf('provider')}`), fieldOf('model').slice(0, 60));
 	const healthTool = (tools?.tools ?? []).find((tool) => tool.name === 'dsh_health');
@@ -186,6 +233,64 @@ async function main() {
 		&& health.includes(`"statusWaitSeconds": ${expectedStatusWait}`)
 		&& expectedTaskWait < 60 && expectedStatusWait < 60,
 		`default=${expectedTaskWait}s status=${expectedStatusWait}s`);
+
+	// 3e. 已接入模型:权威来源 $DSH_HOME/settings.yaml,而且**只在 models 数组里取 id**
+	//     (本机这份文件里 43 处 id: 恰好全是模型 id;换机器/换配置就可能混进非模型的 id,
+	//      所以代码按 models 数组范围取 —— decoy 断言在 7b 用合成的临时 settings.yaml 覆盖)
+	const healthPayload = payloadOf(health);
+	const modelsInfo = healthPayload.models ?? {};
+	const rigolModels = modelsInfo.providers?.rigol ?? [];
+	const expectedModels = installedModelIds();
+	check('dsh_health.models 列出已接入模型(含本项目的两个)',
+		['deepseek-v4.1-flash', 'gemini-3.7-flash'].every((id) => rigolModels.includes(id)) && rigolModels.length >= 40,
+		`rigol ${rigolModels.length} 个:${rigolModels.slice(0, 3).join(', ')} …`);
+	check('models 按文件出现顺序枚举且去重',
+		rigolModels.length === expectedModels.length && rigolModels.every((id, index) => id === expectedModels[index]),
+		`读到 ${rigolModels.length} 个 / 文件里 ${expectedModels.length} 个`);
+	check('models.providers 不含非模型的 id', modelsInfo.error === null && !rigolModels.includes('dsh-deco-plugin'),
+		`error=${JSON.stringify(modelsInfo.error)}`);
+	check('models.defaultModel 回报 settings.yaml 的 agent-default-model',
+		modelsInfo.defaultModel === 'rigol/deepseek-v4.1-flash', String(modelsInfo.defaultModel));
+
+	// 3f. 策略文件:路径 + file:/// 链接 + 预设方案(用户改口径的地方就是它)
+	const policyInfo = healthPayload.modelPolicy ?? {};
+	check('modelPolicy 暴露 path 与 file:/// 链接',
+		policyInfo.path === policyPath && String(policyInfo.fileUrl ?? '') === `file:///${policyPath.replace(/\\/g, '/')}`,
+		`${policyInfo.path} → ${policyInfo.fileUrl}`);
+	check('modelPolicy.presets 含「本项目方案」',
+		Array.isArray(policyInfo.presets) && policyInfo.presets.includes('本项目方案'), JSON.stringify(policyInfo.presets));
+	check('modelPolicy.defaultModel 未指定时为 null', policyInfo.defaultModel === null, JSON.stringify(policyInfo.defaultModel));
+
+	// 3g. 首次接入引导块:策略文件还没指定默认模型时,health 与 dsh_task 都要带上它
+	//     (MCP server 不能直接跟用户对话,只能请调用方 agent 转达)
+	const blockStart = health.indexOf('[首次接入');
+	const setupBlock = blockStart < 0 ? '' : health.slice(blockStart);
+	const blockKeys = ['已接入模型', '请用户指定', 'dsh_setup', String(policyInfo.fileUrl)];
+	check('dsh_health 输出带首次接入引导块(四要素齐全)',
+		setupBlock !== '' && blockKeys.every((key) => setupBlock.includes(key)),
+		blockKeys.filter((key) => !setupBlock.includes(key)).join(',') || setupBlock.split('\n')[0]);
+	check('引导块紧凑(≤10 行)', setupBlock !== '' && setupBlock.split('\n').length <= 10, `${setupBlock.split('\n').length} 行`);
+
+	// 3h. dsh_setup 的拒绝路径:都必须响亮失败(isError:true),且**不动**策略文件
+	const beforeFailure = readFileSync(policyPath, 'utf8');
+	const unknownModel = await client.request('tools/call', { name: 'dsh_setup', arguments: { default_model: '并不存在的模型' } });
+	check('dsh_setup 拒绝未接入的模型',
+		unknownModel?.isError === true && /并不存在的模型/.test(textOf(unknownModel)), textOf(unknownModel).slice(0, 80));
+	check('dsh_setup 拒绝时列出可用模型清单',
+		textOf(unknownModel).includes('deepseek-v4.1-flash') && textOf(unknownModel).includes('rigol'),
+		textOf(unknownModel).split('\n').slice(0, 2).join(' | '));
+	const unknownPreset = await client.request('tools/call', { name: 'dsh_setup', arguments: { preset: '不存在的方案' } });
+	check('dsh_setup 拒绝不存在的预设并列出可用预设',
+		unknownPreset?.isError === true && /不存在的方案/.test(textOf(unknownPreset)) && textOf(unknownPreset).includes('本项目方案'),
+		textOf(unknownPreset).slice(0, 80));
+	const badSetupType = await client.request('tools/call', { name: 'dsh_setup', arguments: { default_model: 3 } });
+	check('dsh_setup 类型不对点名参数名',
+		badSetupType?.isError === true && /default_model/.test(textOf(badSetupType)) && /必须是字符串/.test(textOf(badSetupType)),
+		textOf(badSetupType).slice(0, 80));
+	const emptySetup = await client.request('tools/call', { name: 'dsh_setup', arguments: {} });
+	check('dsh_setup 无参给出可操作提示',
+		emptySetup?.isError === true && /default_model/.test(textOf(emptySetup)), textOf(emptySetup).slice(0, 80));
+	check('失败的 dsh_setup 没有动策略文件', readFileSync(policyPath, 'utf8') === beforeFailure);
 
 	// 3b. 委派契约:少了 expected_seconds 必须被明确拒绝(isError:true,而不是"看起来正常"的说明文本)
 	const missing = await client.request('tools/call', { name: 'dsh_task', arguments: { prompt: 'x', workspace, raw_prompt: true } });
@@ -245,6 +350,41 @@ async function main() {
 	check('dsh_health 回报看门狗的多信号阈值', /"watchdogCpuThresholdMs": 200/.test(health) && /"watchdogStallMinSeconds": 180/.test(health), /watchdog[^\n]*/.exec(health)?.[0] ?? '');
 	check('dsh_health 回报 CPU 干活强度下限', /"watchdogCpuWorkFloorMs": 1500/.test(health), /watchdogCpuWorkFloorMs[^\n]*/.exec(health)?.[0] ?? '');
 	check('task.json 留有逐信号取证 signalState', record.signalState === null || record.signalState === undefined || typeof record.signalState.treeCpuMs === 'number', JSON.stringify(record.signalState ?? null).slice(0, 120));
+
+	// 4e. dsh_task 的返回值也要带首次接入引导块(调用方第一次派活就看得见)
+	check('dsh_task 结果带首次接入引导块(四要素齐全)',
+		/首次接入/.test(taskText) && blockKeys.every((key) => taskText.includes(key)),
+		/\[首次接入[^\]]*\]/.exec(taskText)?.[0] ?? '未出现');
+
+	// 4f. dsh_setup 落盘:只改 `默认模型:` 那一行,其余内容与用户改动一律保留
+	const setDefault = await client.request('tools/call', { name: 'dsh_setup', arguments: { default_model: 'deepseek-v4.1-flash' } });
+	const setDefaultText = textOf(setDefault);
+	check('dsh_setup(default_model) 落盘成功并回报策略文件链接',
+		setDefault?.isError !== true && /"ok": true/.test(setDefaultText) && setDefaultText.includes(policyInfo.fileUrl),
+		setDefaultText.split('\n').slice(0, 3).join(' | '));
+	const afterDefault = readFileSync(policyPath, 'utf8');
+	check('策略文件的 `默认模型:` 行被改写', /^默认模型: deepseek-v4\.1-flash$/m.test(afterDefault),
+		/^默认模型:.*$/m.exec(afterDefault)?.[0] ?? '未找到该行');
+	check('策略文件其余内容一字未动',
+		afterDefault.replace(/^默认模型:.*$/m, '') === shippedPolicy.replace(/^默认模型:.*$/m, '') && afterDefault.length > 100,
+		`${afterDefault.length} 字符 / 原文 ${shippedPolicy.length} 字符`);
+	const healthAfter = textOf(await client.request('tools/call', { name: 'dsh_health', arguments: {} }));
+	check('指定过默认模型后引导块消失', !/首次接入/.test(healthAfter), payloadOf(healthAfter).modelPolicy?.defaultModel ?? '');
+	check('设过之后 modelPolicy.defaultModel 就是那个模型',
+		payloadOf(healthAfter).modelPolicy?.defaultModel === 'deepseek-v4.1-flash', String(payloadOf(healthAfter).modelPolicy?.defaultModel));
+	// 预设方案:先换成另一个模型,再按预设落盘 —— 证明 preset 真的取到了预设里的模型
+	await client.request('tools/call', { name: 'dsh_setup', arguments: { default_model: 'gemini-3.7-flash' } });
+	check('dsh_setup 支持裸 model id', /^默认模型: gemini-3\.7-flash$/m.test(readFileSync(policyPath, 'utf8')),
+		/^默认模型:.*$/m.exec(readFileSync(policyPath, 'utf8'))?.[0] ?? '');
+	const setPreset = await client.request('tools/call', { name: 'dsh_setup', arguments: { preset: '本项目方案' } });
+	check('dsh_setup(preset: "本项目方案") 用预设里的模型落盘',
+		setPreset?.isError !== true && /^默认模型: deepseek-v4\.1-flash$/m.test(readFileSync(policyPath, 'utf8')), textOf(setPreset).slice(0, 80));
+	const setQualified = await client.request('tools/call', { name: 'dsh_setup', arguments: { default_model: 'rigol/gemini-3.7-flash' } });
+	check('dsh_setup 也认 `provider/model` 形式',
+		setQualified?.isError !== true && /^默认模型: gemini-3\.7-flash$/m.test(readFileSync(policyPath, 'utf8')), textOf(setQualified).slice(0, 80));
+	check('自检没有动仓库里那份 config/model-policy.md',
+		readFileSync(join(BRIDGE_ROOT, 'config', 'model-policy.md'), 'utf8') === shippedPolicy,
+		join(BRIDGE_ROOT, 'config', 'model-policy.md'));
 
 	// 5. 失败路径:不存在的工作空间必须报错而不是静默成功
 	const bad = await client.request('tools/call', { name: 'dsh_task', arguments: { prompt: 'x', workspace: join(workspace, 'no-such-dir'), expected_seconds: 60 } });
@@ -314,6 +454,87 @@ async function main() {
 		debugClient.stderrText.includes('MCP stdio server ready') && debugClient.stderrText.includes(manifestVersion),
 		JSON.stringify(debugClient.stderrText.trim().slice(0, 120)));
 	debugClient.close();
+
+	// 7b. 隔离 DSH_HOME:模型清单只能来自 models 数组 —— **非模型的 `id:` 键不许混进来**。
+	//     真实 settings.yaml 里目前没有别处的 id:,所以这里造一个 decoy 把这条钉住;
+	//     顺带覆盖"重复 id 去重"与"llm-deepseek 的空数组不产生 provider"。
+	const isolatedHome = mkdtempSync(join(tmpdir(), 'dsh-subagent-selftest-home-'));
+	writeFileSync(join(isolatedHome, 'settings.yaml'), [
+		'plugins:',
+		'  - id: dsh-deco-plugin',
+		'    version: 1.0.0',
+		'llm-pi-ai:',
+		'  providers:',
+		'    {',
+		'      rigol:',
+		'        {',
+		'          apiKeyEnv: RIGOL_API_KEY,',
+		'          models:',
+		'            [',
+		'              { id: alpha-one, reasoningEfforts: { high: high } },',
+		'              { id: beta-two, reasoningEfforts: { high: high } },',
+		'              { id: alpha-one, reasoningEfforts: { high: high } }',
+		'            ]',
+		'        }',
+		'    }',
+		'llm-deepseek:',
+		'  models: []',
+		'agent-default-model:',
+		'  provider: rigol',
+		'  model: alpha-one',
+		'',
+	].join('\n'), 'utf8');
+	const isolatedClient = new Client(process.execPath, [MCP_ENTRY], {
+		DSH_SUBAGENT_AUTOSTART_MONITOR: 'off',
+		DSH_HOME: isolatedHome,
+		DSH_SUBAGENT_POLICY: join(isolatedHome, 'no-such-policy.md'),
+	});
+	await isolatedClient.request('initialize', {
+		protocolVersion: '2025-06-18',
+		capabilities: { roots: { listChanged: true } },
+		clientInfo: { name: 'dsh-subagent-selftest-isolated', version: '0.0.1' },
+	});
+	const isolatedPayload = payloadOf(textOf(await isolatedClient.request('tools/call', { name: 'dsh_health', arguments: {} })));
+	check('只从 models 数组取 id(decoy 的插件 id 不算模型)',
+		JSON.stringify(isolatedPayload.models?.providers) === JSON.stringify({ rigol: ['alpha-one', 'beta-two'] }),
+		JSON.stringify(isolatedPayload.models?.providers));
+	check('重复出现的 id 只保留一次(并保持首次出现位置)',
+		(isolatedPayload.models?.providers?.rigol ?? []).filter((id) => id === 'alpha-one').length === 1, '');
+	check('llm-deepseek 的空 models 数组不产生 provider',
+		!Object.hasOwn(isolatedPayload.models?.providers ?? {}, 'llm-deepseek'),
+		JSON.stringify(Object.keys(isolatedPayload.models?.providers ?? {})));
+	check('隔离 DSH_HOME 下 defaultModel 按同一份文件解析',
+		isolatedPayload.models?.defaultModel === 'rigol/alpha-one', String(isolatedPayload.models?.defaultModel));
+	check('策略文件不存在时如实报"未指定"而不是崩',
+		isolatedPayload.modelPolicy?.defaultModel === null
+		&& Array.isArray(isolatedPayload.modelPolicy?.presets) && isolatedPayload.modelPolicy.presets.length === 0
+		&& String(isolatedPayload.modelPolicy?.fileUrl ?? '').startsWith('file:///'),
+		JSON.stringify(isolatedPayload.modelPolicy?.presets));
+	isolatedClient.close();
+
+	// 7c. settings.yaml 缺失:枚举不到模型时**响亮报 error**,既不抛异常也不假装有模型
+	const bareHome = mkdtempSync(join(tmpdir(), 'dsh-subagent-selftest-bare-'));
+	const bareClient = new Client(process.execPath, [MCP_ENTRY], {
+		DSH_SUBAGENT_AUTOSTART_MONITOR: 'off',
+		DSH_HOME: bareHome,
+		DSH_SUBAGENT_POLICY: join(bareHome, 'model-policy.md'),
+	});
+	await bareClient.request('initialize', {
+		protocolVersion: '2025-06-18',
+		capabilities: {},
+		clientInfo: { name: 'dsh-subagent-selftest-bare', version: '0.0.1' },
+	});
+	const barePayload = payloadOf(textOf(await bareClient.request('tools/call', { name: 'dsh_health', arguments: {} })));
+	check('settings.yaml 缺失 → models.error 如实报告且 providers 为空',
+		typeof barePayload.models?.error === 'string' && barePayload.models.error.includes('settings.yaml')
+		&& Object.keys(barePayload.models?.providers ?? {}).length === 0,
+		JSON.stringify(barePayload.models?.error));
+	const bareSetup = await bareClient.request('tools/call', { name: 'dsh_setup', arguments: { default_model: 'deepseek-v4.1-flash' } });
+	check('枚举不到模型时 dsh_setup 响亮拒绝(不静默写坏策略文件)',
+		bareSetup?.isError === true && /settings\.yaml/.test(textOf(bareSetup)), textOf(bareSetup).slice(0, 80));
+	check('被拒绝后策略文件仍不存在(没被创建)',
+		!existsSync(join(bareHome, 'model-policy.md')));
+	bareClient.close();
 
 	// 7. 落盘审计
 	const report = { workspace, at: new Date().toISOString(), results };

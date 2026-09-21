@@ -62,6 +62,31 @@
 | `DSH_SUBAGENT_MONITOR_ARGS` | — | 追加参数(JSON 数组,或按空格拆分的字符串) |
 | `DSH_SUBAGENT_HOST_PROBE_TIMEOUT_MS` | `15000` | 宿主进程枚举(`Get-CimInstance`)单次超时;失败会自动重试一次 |
 
+### 1.5 模型策略(选择模型的口径)
+
+模型清单来自 **DSH 自己**(`$DSH_HOME/settings.yaml` 里 `models` 数组声明的 id),桥接层不写死
+任何模型;「什么时候用哪个模型」写在**用户可编辑的策略文件**里,每次调用重新读,改完不用重启。
+
+| 项 | 值 |
+| --- | --- |
+| `DSH_SUBAGENT_POLICY` | 覆写策略文件路径;默认 `<桥接层根>/config/model-policy.md`(即 `~/.dsh/subagent/config/model-policy.md`) |
+| 机器读哪几行 | 第一条 `默认模型: <模型 id>` 行;每个 `### <预设名>` 小节里的 `预设默认模型: <模型 id>` 行。其余正文不解析 |
+| 未指定 | 写成 `默认模型: (未指定)` ⇒ `dsh_task` / `dsh_health` 的返回值会各带一段「首次接入」引导(≤10 行) |
+| 已接入模型 | `dsh_health` 的 `models.providers`(按 provider 分组;只认 `llm-pi-ai.providers.<route>.models` 与 `llm-deepseek.models` 的方括号数组;枚举不到时把原因写进 `models.error` 而不是崩) |
+| 路径与链接 | `dsh_health` 的 `modelPolicy.path` / `fileUrl`(`file:///…` 形式的绝对路径) |
+
+三种落盘方式(`dsh_setup`,**只改 `默认模型:` 那一行**):
+
+| 参数 | 语义 | 写错会怎样 |
+| --- | --- | --- |
+| `default_model` | 已接入的模型,裸 id(如 `deepseek-v4.1-flash`)或 `provider/id` | `isError:true` 并列出可用模型清单 |
+| `preset` | 策略文件里已有的预设名(如 `本项目方案`) | `isError:true` 并列出可用预设 |
+| `policy_markdown` | **整体替换策略文件正文**(谨慎) | 正文里没有 `默认模型:` 行 ⇒ `isError:true` |
+
+> 参数类型不对(如 `default_model: 3`)同样是 `isError:true` **并点名参数名**。
+> 环境变量覆写(含 `DSH_SUBAGENT_POLICY`)要重启对应 harness 才生效 —— MCP server 是它在
+> 启动时拉起的常驻进程;但**策略文件的内容改完立刻生效**(每次调用都重读)。
+
 ---
 
 ## 2. DSH 侧:`subagent` profile

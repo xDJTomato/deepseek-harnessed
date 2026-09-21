@@ -9,8 +9,13 @@
  *
  * 数据来源:宿主侧 observer 插件把每个 dsh_task 任务投影成
  *   record.projectionValues['dsh-subagent'] = { jobId, caller, callerLabel, title,
- *     status, running, workspace, startedAt, finishedAt, expectedSeconds, deadlineAt,
- *     lastProgressAt, progressBytes, acceptance, exitCode, error }
+ *     status, running, workspace, model, provider, reasoningEffort, startedAt,
+ *     finishedAt, expectedSeconds, deadlineAt, lastProgressAt, progressBytes,
+ *     acceptance, exitCode, error }
+ *   —— model / provider / reasoningEffort 是这次调用**实际生效**的模型信息,来自
+ *   任务现场的 meta.json(runner 写的真值,调用方省略时也已解析好),meta 缺失才退回
+ *   task.json(请求值);三者都可能缺失,缺失时 model 显示「默认」,provider /
+ *   推理档两行不显示(老投影没有这三个字段也必须照常渲染)。
  * 并给会话标题打上 "⚡ <调用方> · <标题>" 前缀。卡片优先读投影,投影缺失时
  * 回退到标题前缀(浏览器刷新后投影被基线清空的那一小段时间)。
  */
@@ -269,6 +274,8 @@ body[data-ds-dark-theme] .sap-root, [data-ds-dark-theme] .sap-root {
   flex: none; padding: 0 4px; border-radius: 4px;
   font-family: var(--ds-font-family-code, monospace); font-size: 10px; line-height: 14px; font-weight: 600;
   color: var(--sap-fg-3); border: 1px solid var(--sap-line-soft); background: var(--sap-fill-1);
+  /* 模型 id 比磁贴还宽(deepseek-v4.1-flash ≈ 116px):超了要省略号,不要被磁贴裁掉半个字。 */
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .sap-tile[data-native="true"][data-tone="run"] .sap-chip { color: var(--sap-run); border-color: var(--sap-run); }
 .sap-tile[data-current="true"] {
@@ -624,6 +631,10 @@ body:not([data-ds-dark-theme]) { --dsw-alias-state-warn-primary: #8a4700; }
 			tone: running ? "run" : TONE_BY_STATUS[status] ?? "dim",
 			jobId: typeof meta?.jobId === "string" ? meta.jobId : "",
 			workspace: typeof meta?.workspace === "string" ? meta.workspace : typeof record.cwd === "string" ? record.cwd : "",
+			// 实际生效的模型(观察器投影,老记录可能没有 → 空串,绝不渲染出 undefined)。
+			model: typeof meta?.model === "string" ? meta.model : "",
+			provider: typeof meta?.provider === "string" ? meta.provider : "",
+			reasoningEffort: typeof meta?.reasoningEffort === "string" ? meta.reasoningEffort : "",
 			startedAt,
 			finishedAt: msOf(meta?.finishedAt),
 			deadlineAt,
@@ -1095,6 +1106,18 @@ body:not([data-ds-dark-theme]) { --dsw-alias-state-warn-primary: #8a4700; }
 								jsx("b", { children: parts.join(" · ") }),
 							],
 						}),
+						// 这次调用实际生效的模型:紧凑 chip,复用层级徽标那套样式与配色。
+						// 单独占一行 —— 模型 id 比磁贴还宽,和"耗时 · 用量"挤同一行会被裁掉。
+						// 本机子代理没有任务现场(没有模型信息),不显示这一行。
+						entry.native === true
+							? null
+							: jsx("span", {
+								className: "sap-tile-meta",
+								children: jsx("span", {
+									className: "sap-chip",
+									children: entry.model === "" ? "默认" : entry.model,
+								}),
+							}),
 						entry.hasBar && entry.running
 							? jsx("span", {
 								className: "sap-bar",
@@ -1157,6 +1180,10 @@ body:not([data-ds-dark-theme]) { --dsw-alias-state-warn-primary: #8a4700; }
 					["任务号", entry.jobId === "" ? "-" : entry.jobId, ""],
 				];
 				if (entry.workspace !== "") rows.push(["工作区", entry.workspace, ""]);
+				// 这次调用实际生效的模型:未知时和列表行同一个口径(写「默认」)。
+				rows.push(["模型", entry.model === "" ? "默认" : entry.model, ""]);
+				if (entry.provider !== "") rows.push(["服务商", entry.provider, ""]);
+				if (entry.reasoningEffort !== "") rows.push(["推理档", entry.reasoningEffort, ""]);
 				rows.push([
 					"状态",
 					entry.running ? "运行中" + (entry.status === "running" ? "" : " · " + entry.status) : entry.status === "" ? "未知" : entry.status,

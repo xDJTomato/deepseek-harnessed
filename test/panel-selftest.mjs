@@ -152,6 +152,15 @@ function findAll(tree, predicate) {
 
 const byClass = (tree, className) => findAll(tree, (node) => node.props?.className === className);
 
+/** 把整棵渲染树里的**文本子节点**串起来(渲染结果里能看到的所有文字)。 */
+function textOf(tree) {
+	const parts = [];
+	walk(tree, (node) => {
+		if (typeof node.props?.children === "string") parts.push(node.props.children);
+	});
+	return parts.join(" | ");
+}
+
 // ------------------------------------------------------------------ 结论收集
 
 const results = [];
@@ -236,6 +245,10 @@ const runningRecord = {
 			status: "running",
 			running: true,
 			workspace: "D:\\work\\demo",
+			// 观察器读 meta.json 得到的"实际生效"模型信息(调用方没指定也解析好了)
+			model: "deepseek-v4.1-flash",
+			provider: "rigol",
+			reasoningEffort: "high",
 			startedAt: "2026-09-11T10:00:00.000Z",
 			expectedSeconds: 300,
 			deadlineAt: "2026-09-11T10:05:00.000Z",
@@ -248,6 +261,16 @@ const runningRecord = {
 const entry = logic.entryOf(runningRecord, now);
 check("entryOf 读到调用方分组键", entry?.caller === "cursor-vscode" && entry.glyph === "⌖");
 check("entryOf 计算 tone=running", entry?.tone === "run");
+check("entryOf 读出实际生效的模型/服务商/推理档",
+	entry?.model === "deepseek-v4.1-flash" && entry?.provider === "rigol" && entry?.reasoningEffort === "high",
+	[entry?.model, entry?.provider, entry?.reasoningEffort].join(" / "));
+const legacyEntry = logic.entryOf({
+	...runningRecord,
+	projectionValues: { "dsh-subagent": { caller: "cursor-vscode" } },
+}, now);
+check("老投影没有这三个字段时降级成空串(不崩、不渲染 undefined)",
+	legacyEntry?.model === "" && legacyEntry?.provider === "" && legacyEntry?.reasoningEffort === "",
+	JSON.stringify([legacyEntry?.model, legacyEntry?.provider, legacyEntry?.reasoningEffort]));
 check("entryOf 计算进度比", Math.abs(entry.progressRatio - 125 / 300) < 0.001, String(entry.progressRatio));
 check("entryOf 把 ISO 时间转成毫秒", entry?.startedAt === t0 && entry?.deadlineAt === t0 + 300000);
 check("entryOf 忽略非子代理会话", logic.entryOf({ id: "session-x", running: true }, now) === null);
@@ -384,6 +407,9 @@ const sessionsState = {
 					expectedSeconds: 600,
 					deadlineAt: "2026-09-11T10:11:00.000Z",
 					progressBytes: 4096,
+					// 只给了 model/provider(没有 reasoningEffort):推理档那一行必须不出现
+					model: "deepseek-v4.1-flash",
+					provider: "rigol",
 				},
 			},
 		},
@@ -476,6 +502,11 @@ check("磁贴带悬停详情(job 号 / 工作区)",
 	tileOfA === undefined ? "未找到 session-a 的磁贴" : String(tileOfA.props.title).split("\n")[1]);
 check("运行中磁贴的提示写明不直接打开", tileOfA !== undefined
 	&& String(tileOfA.props.title).includes("运行中的外部会话不直接打开"));
+// 列表行要能一眼看出"这次调用实际用的是哪个模型"(投影里的 model,未知时写「默认」)
+const tileChips = byClass(tree, "sap-chip").map((chip) => chip.props.children);
+check("列表行带模型标识(两条记录都显示投影里的 model)",
+	tileChips.length === 2 && tileChips.every((text) => text === "deepseek-v4.1-flash"),
+	JSON.stringify(tileChips));
 
 // 点击**运行中**的任务:不能走 sessions.open(宿主打开=接管写权,会写坏外部会话日志)
 tileOfA.props.onClick();
@@ -492,6 +523,12 @@ check("详情页显示实时输出行(子代理正在干什么)",
 check("详情页显示任务号与工作区",
 	byClass(treeDetail, "sap-kv").length === 1
 	&& JSON.stringify(byClass(treeDetail, "sap-kv")[0].props.children).includes("20260911-100000-aaaa"));
+// 详情页的行式口径:模型必有(未知写「默认」)、服务商/推理档仅在有值时出现
+const detailKv = JSON.stringify(byClass(treeDetail, "sap-kv")[0]?.props.children ?? []);
+check("详情页有「模型」行且是实际生效的模型",
+	detailKv.includes("模型") && detailKv.includes("deepseek-v4.1-flash"), detailKv.slice(0, 200));
+check("详情页有「服务商」行", detailKv.includes("服务商") && detailKv.includes("rigol"));
+check("详情页有「推理档」行", detailKv.includes("推理档") && detailKv.includes("high"));
 check("详情页提示会话转录不随外部进程增长",
 	byClass(treeDetail, "sap-note").some((note) => JSON.stringify(note.props.children).includes("不会随外部进程增长")));
 
@@ -710,6 +747,47 @@ check("点运行中的本机子代理 = 直接打开会话(同进程,宿主自�
 	JSON.stringify(opened));
 check("api 暴露了拉取子代理目录的通道",
 	typeof api.api.refreshSubagents === "function");
+
+// 老投影(宿主里的观察器还是旧版,没有 model/provider/reasoningEffort 三个字段):
+// 必须照常渲染,不能崩,也不能把 undefined / null 渲染成文字;模型那一行写「默认」。
+// (放在最后:它会点开一个 legacy 详情,清一次 hook 槽,不影响上面的交互链路。)
+hookSlots.clear();
+const legacyState = {
+	ids: ["session-legacy"],
+	byId: {
+		"session-legacy": {
+			id: "session-legacy",
+			running: true,
+			projectionValues: {
+				"dsh-subagent": {
+					jobId: "20260911-090000-llll",
+					caller: "cursor-vscode",
+					callerLabel: "Cursor",
+					title: "旧版投影的老任务",
+					status: "running",
+					running: true,
+					workspace: "D:\\work\\legacy",
+					startedAt: "2026-09-11T09:00:00.000Z",
+					expectedSeconds: 300,
+				},
+			},
+		},
+	},
+};
+const legacyProps = { ...panelProps, useSessions: (selector) => selector(legacyState) };
+const treeLegacyList = render(jsx(registered.component, legacyProps));
+const legacyChips = byClass(treeLegacyList, "sap-chip").map((chip) => chip.props.children);
+check("老投影的列表行写「默认」而不是 undefined",
+	legacyChips.length === 1 && legacyChips[0] === "默认", JSON.stringify(legacyChips));
+byClass(treeLegacyList, "sap-tile")[0].props.onClick();
+const treeLegacyDetail = render(jsx(registered.component, legacyProps));
+const legacyKv = JSON.stringify(byClass(treeLegacyDetail, "sap-kv")[0]?.props.children ?? []);
+check("老投影的详情页仍显示「模型 / 默认」,且不出现服务商/推理档两行",
+	legacyKv.includes("模型") && legacyKv.includes("默认")
+	&& !legacyKv.includes("服务商") && !legacyKv.includes("推理档"), legacyKv.slice(0, 240));
+const legacyText = textOf(treeLegacyDetail);
+check("老投影渲染结果里没有 undefined / null 字样",
+	!legacyText.includes("undefined") && !legacyText.includes("null"), legacyText.slice(0, 200));
 
 // 空态(先清掉上面几次交互留下的组件状态,模拟页面刚刷新)
 hookSlots.clear();
