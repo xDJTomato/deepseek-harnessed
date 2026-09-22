@@ -6,6 +6,11 @@
 
 ### 新增
 
+- **「先拆再派、能并行就并行」写进桥接层**:`dsh_task` 描述新增【先拆再派,能并行就并行】一段,
+  `initialize.instructions` 新增第 8 条,委派前言新增一行。阈值可判定:一次只派**一个可独立验收的产物**、
+  目标 `expected_seconds` ≤ 300s;要改 3 个以上文件、估时超 300s、或属于"先调研再实现再验证"的多阶段作业,
+  **必须先拆**;互不依赖的子任务**同一轮里并发派出**(同时起多次 `dsh_task`),只有真存在依赖才串行。
+  委派前言同时告诉子代理:这次任务是从更大目标里拆出来的一小片,只做这一片、不顺手扩大范围。
 - **桥接进程的生命周期留痕**(`state/mcp-lifecycle.log`):启动(带版本号)、退出原因、
   未处理异常/未处理拒绝的堆栈,各写一行。起因是实际踩到的故障 —— Codex 里 `dsh_task`
   调用返回 `tool call error: tool call failed for 'dsh/dsh_task' / Caused by: Transport closed`,
