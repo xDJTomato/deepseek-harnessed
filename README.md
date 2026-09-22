@@ -832,7 +832,7 @@ CLI 命令行支持参数：`--expected-seconds <n>`、`--acceptance <text>`、`
 │   ├── dsh-subagent.mjs      CLI:任何 harness 都能 shell 调用
 │   └── dsh-subagent-mcp.mjs  MCP server 入口
 ├── test/
-│   ├── selftest.mjs          协议级端到端自检(98 项:含模型枚举规则、策略文件链接与预设、首次接入引导块、dsh_setup 落盘/拒绝路径、隔离 DSH_HOME 的 decoy)
+│   ├── selftest.mjs          协议级端到端自检(102 项:含模型枚举规则、策略文件链接与预设、首次接入引导块、dsh_setup 落盘/拒绝路径、隔离 DSH_HOME 的 decoy、生命周期留痕)
 │   ├── monitor-autostart-probe.mjs 监控窗口自动拉起自检(26 项,假 exe + 临时 DSH_HOME)
 │   ├── ledger-liveness-probe.mjs   台账残留记录自检(20 项,临时 DSH_HOME 造假台账)
 │   ├── e2e-harness.mjs       验收脚本:让每个 harness 自己委托一次并核对产物
@@ -910,4 +910,4 @@ CLI 命令行支持参数：`--expected-seconds <n>`、`--acceptance <text>`、`
 | 模型参数限制与校验收敛 | 执行 `npm run test:all` | ✅ 61/61 项全绿，验证工具描述与参数定义的一致性 |
 | 悬浮卡片显示实际生效模型 | `node test/observer-selftest.mjs`（49 项） + `node test/panel-selftest.mjs`（138 项） | ✅ 测试全绿（0 ❌）：投影优先读取 `meta.json` 中的实际生效模型，无记录时回退至 `task.json`；卡片列表行展示模型 chip，详情页展示服务商与推理强度，旧数据兼容显示为默认 |
 | 预览窗口只读显示子代理对话 | `node test/observer-selftest.mjs`（49 项） + `node test/panel-selftest.mjs`（138 项） | ✅ 测试全绿（0 ❌）：观察器与 Token 用量同一趟折叠会话日志，产出「用户 / 助手 / 调用 / 返回」四类转录（推理块不进预览，空返回标成 `(空返回)`），按 60 条与 6000 字封顶后随投影下发；预览窗只渲染 `role` 与 `text`，没有任何写入口，有转录时不再退回 `stderr.log` 尾部 |
-| 动态模型管理策略体系 | `npm run test:all`（10 个测试脚本，包含 `test:all` 组合调用） | ✅ **389/389 项全绿**（`selftest.mjs` 包含 100 条断言）：模型列表动态从 `$DSH_HOME/settings.yaml` 解析，从 `llm-pi-ai.providers.<route>.models` 获取，策略文件 `config/model-policy.md` 支持用户自定义与预设方案（`modelPolicy.path` / `fileUrl` / `presets`），未配置时输出初始化引导，执行 `dsh_setup(default_model:)` 写入配置后引导自动关闭，非法参数准确返回 `isError:true` 拒绝处理，短任务正常返回 `status=ok` |
+| 动态模型管理策略体系 | `npm run test:all`（10 个测试脚本，包含 `test:all` 组合调用） | ✅ **392/392 项全绿**（`selftest.mjs` 包含 102 条断言）：模型列表动态从 `$DSH_HOME/settings.yaml` 解析，从 `llm-pi-ai.providers.<route>.models` 获取，策略文件 `config/model-policy.md` 支持用户自定义与预设方案（`modelPolicy.path` / `fileUrl` / `presets`），未配置时输出初始化引导，执行 `dsh_setup(default_model:)` 写入配置后引导自动关闭，非法参数准确返回 `isError:true` 拒绝处理，短任务正常返回 `status=ok` |

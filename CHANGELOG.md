@@ -2,6 +2,32 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/);日期为本地实测日期。
 
+## [未发布]
+
+### 新增
+
+- **桥接进程的生命周期留痕**(`state/mcp-lifecycle.log`):启动(带版本号)、退出原因、
+  未处理异常/未处理拒绝的堆栈,各写一行。起因是实际踩到的故障 —— Codex 里 `dsh_task`
+  调用返回 `tool call error: tool call failed for 'dsh/dsh_task' / Caused by: Transport closed`,
+  而"客户端关掉了管道"和"桥接进程崩了"在调用方看来**完全一样**,当时只能靠数 `node.exe`
+  进程个数才敢确认桥接进程已经不在了。这几行不看 `DSH_SUBAGENT_DEBUG`、也不走 stderr
+  (harness 会把 MCP 子进程的 stderr 渲染成 warning),正常一天只多两条。
+- 未处理异常与未处理拒绝**不再带走整条通道**:Node 24 默认把未处理的 Promise 拒绝当异常抛出,
+  过去一个没包住的 `await` 就能让整个 stdio 服务退出 —— 之后调用方每次调用都是
+  `Transport closed`,直到它自己重启。现在记一行留痕,继续服务下一个请求。
+
+### 修复
+
+- 连接收尾只会执行一次(原先 stdin 的 `end` 与 `close` 会各走一遍 `shutdown`,
+  生命周期日志里出现两条重复的退出原因)。
+
+### 校验
+
+- `npm run test:all` → 392 项(selftest 102、panel 138、observer 49、launcher 13、ledger 20、
+  autostart 26、leaf 14、exec-surface 11、monitor-live 8、wait-policy 11);
+  新增两条断言:客户端关掉管道后 `state/mcp-lifecycle.log` 里必须留下退出原因与退出码,
+  以及启动行必须带版本号。
+
 ## [0.1.10] — 2026-09-21
 
 ### 新增

@@ -557,6 +557,34 @@ async function main() {
 		!existsSync(join(bareHome, 'model-policy.md')));
 	bareClient.close();
 
+	// 7d. 生命周期留痕:调用方那边只看得见一句 "Transport closed",所以退出原因必须自己落盘 ——
+	// 否则「客户端关了管道」和「本进程崩了」永远分不清(2026-09-22 实测:Codex 里的桥接进程
+	// 没了,只能靠数 node.exe 进程数才敢确认)。
+	const lifeHome = mkdtempSync(join(tmpdir(), 'dsh-subagent-selftest-life-'));
+	const lifeClient = new Client(process.execPath, [MCP_ENTRY], {
+		DSH_SUBAGENT_AUTOSTART_MONITOR: 'off',
+		DSH_HOME: lifeHome,
+		DSH_SUBAGENT_POLICY: join(lifeHome, 'model-policy.md'),
+	});
+	await lifeClient.request('initialize', {
+		protocolVersion: '2025-06-18',
+		capabilities: {},
+		clientInfo: { name: 'dsh-subagent-selftest-life', version: '0.0.1' },
+	});
+	const lifeExited = new Promise((resolve) => lifeClient.child.once('exit', (code) => resolve(code)));
+	lifeClient.child.stdin.end();
+	const lifeCode = await Promise.race([
+		lifeExited,
+		new Promise((resolve) => setTimeout(() => resolve('timeout'), 5000)),
+	]);
+	const lifeLog = readFileSync(join(lifeHome, 'subagent', 'state', 'mcp-lifecycle.log'), 'utf8');
+	check('客户端关掉管道 → 退出原因留在 state/mcp-lifecycle.log',
+		lifeCode === 0 && /shutdown: 客户端关闭了输入流/.test(lifeLog) && /exit code=0/.test(lifeLog),
+		`exit=${String(lifeCode)} ${JSON.stringify(lifeLog.trim().split('\n').map((line) => line.replace(/^\S+ pid=\d+ /, '')))}`);
+	check('生命周期日志里有启动行(带版本号,可核对跑的是哪一版)',
+		new RegExp(`start bridge v${manifestVersion.replace(/\./g, '\\.')}`).test(lifeLog));
+	lifeClient.close();
+
 	// 7. 落盘审计
 	const report = { workspace, at: new Date().toISOString(), results };
 	writeFileSync(join(BRIDGE_ROOT, 'state', 'selftest-report.json'), `${JSON.stringify(report, null, 2)}\n`, 'utf8');
