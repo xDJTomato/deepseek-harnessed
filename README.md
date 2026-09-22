@@ -197,7 +197,7 @@ MCP 服务器名称统一为 **`dsh`**，在各客户端中工具名称形如 `m
 | 定义位置 | 规范内容 |
 | --- | --- |
 | `initialize.instructions` | 包含 `initialize 带委派操作手册` 概要（≤1500字符）：时间预估、验收标准、短超时优先等待、状态流转与失败排查说明 |
-| `dsh_task.description` | 包含 `dsh_task 描述含完整委派约定`（约 2900 字符）：**先拆再派的原则与阈值**（一次只派一个可独立验收的产物、`expected_seconds` ≤ 300s；超过 300s、要改 3 个以上文件、或属于「先调研再实现再验证」的多阶段作业必须先拆；互不依赖的子任务同一轮里并发派出，有依赖的才串行）、明确的执行上限与经验区间（单文件 60~180s、多文件特性 300~900s、重构 900~1800s 且需拆分）、`deadlineAt = 开始时刻 + expected_seconds × grace`、七种状态语义、基于 `recent_activity` / `progress_bytes` / `last_progress_at` 的排查流程、模型配置四步法与禁止项 |
+| `dsh_task.description` | 包含 `dsh_task 描述含完整委派约定`（约 3250 字符）：**先拆再派的原则与阈值**（一次只派一个可独立验收的产物、`expected_seconds` ≤ 300s；超过 300s、要改 3 个以上文件、或属于「先调研再实现再验证」的多阶段作业必须先拆；互不依赖的子任务同一轮里并发派出，有依赖的才串行）、**禁止委派的清单**（短指令作业自己做；dev server / watch / daemon / 交互式终端 / 需要成对收尾的独占资源不派 —— 收尾会连进程树一起带走，常驻的东西由调用方自己起后台作业）、明确的执行上限与经验区间（单文件 60~180s、多文件特性 300~900s、重构 900~1800s 且需拆分）、`deadlineAt = 开始时刻 + expected_seconds × grace`、七种状态语义、基于 `recent_activity` / `progress_bytes` / `last_progress_at` 的排查流程、模型配置四步法与禁止项 |
 | 各参数 `description` | `expected_seconds` 说明截止时间与参考区间；`acceptance` 提供可判定正例；`wait_seconds` 说明默认 45 秒短超时及 `dsh_task_status(wait_seconds=30)` 轮询规则（禁止传 0 或大于 60）；`permission` 提示受限模式下使用 write/edit 工具；`timeout_seconds`/`model`/`provider`/`reasoning_effort`/`raw_prompt`/`label` 说明错误处理与错误代码（`UNKNOWN_MODEL` / `NO_ADAPTER` / `UNSUPPORTED_REASONING_EFFORT`） |
 | `dsh_setup.description` | 说明三种配置模式（`default_model` / `preset` / `policy_markdown`），强调仅修改 `默认模型:` 声明行并保留用户其余配置 |
 | `dsh_task_status.description` | 解析 `progress_bytes`、`last_progress`、`recent_activity`、`process_tree`、`silent_seconds` 字段定义 |

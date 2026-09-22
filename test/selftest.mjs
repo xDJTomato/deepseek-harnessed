@@ -167,8 +167,8 @@ async function main() {
 	const instructions = String(init?.instructions ?? '');
 	check('initialize 带委派操作手册 instructions', instructions.length > 400 && instructions.includes('expected_seconds'),
 		`${instructions.length} 字符`);
-	check('instructions 覆盖 拆分/估时/验收/轮询/止损', ['先拆再并行', 'acceptance', '短超时', 'dsh_task_kill', 'stalled'].every((key) => instructions.includes(key)),
-		['先拆再并行', 'acceptance', '短超时', 'dsh_task_kill', 'stalled'].filter((key) => instructions.includes(key)).join(','));
+	check('instructions 覆盖 拆分/禁止项/估时/验收/轮询/止损', ['先拆再并行', '常驻进程', 'acceptance', '短超时', 'dsh_task_kill', 'stalled'].every((key) => instructions.includes(key)),
+		['先拆再并行', '常驻进程', 'acceptance', '短超时', 'dsh_task_kill', 'stalled'].filter((key) => instructions.includes(key)).join(','));
 	check('instructions 不超长(≤1500)', instructions.length <= 1500, `${instructions.length} 字符`);
 	client.notify('notifications/initialized', {});
 
@@ -180,7 +180,7 @@ async function main() {
 	check('dsh_task 要求必填 expected_seconds', (taskTool?.inputSchema?.required ?? []).includes('expected_seconds'), JSON.stringify(taskTool?.inputSchema?.required ?? []));
 	// 2b. 委派建议必须写进工具定义本身(而不是只在 README 里)
 	const taskDesc = String(taskTool?.description ?? '');
-	const descNeedles = ['硬承诺', '单文件小改 60~180', '可机检', '短超时', 'stalled', 'recent_activity', '20 分钟', 'pwsh', '先拆再派', '同一轮里并发派出'];
+	const descNeedles = ['硬承诺', '单文件小改 60~180', '可机检', '短超时', 'stalled', 'recent_activity', '20 分钟', 'pwsh', '先拆再派', '同一轮里并发派出', '这些活不要派给子代理', '常驻'];
 	check('dsh_task 描述含完整委派约定', descNeedles.every((needle) => taskDesc.includes(needle)),
 		descNeedles.filter((needle) => !taskDesc.includes(needle)).join(',') || `${taskDesc.length} 字符`);
 	const fieldOf = (name) => String(taskTool?.inputSchema?.properties?.[name]?.description ?? '');
