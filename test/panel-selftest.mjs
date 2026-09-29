@@ -192,6 +192,22 @@ check("CSS:缩放用 zoom(不留透明挡点击的空盒子)",
 check("CSS:告警条带底色 + 左边条,不只靠颜色",
 	/\.sap-note \{[^}]*background: var\(--sap-warn-bg\)[^}]*border-left-width: 3px/.test(injectedStyles[0].textContent));
 
+// —— 性能闸门(2026-09-29):「子代理面板 + 设置窗同开就卡死」的防回归 ——
+// 机制:常驻的无限动画让宿主按帧率重绘这张卡片,而设置窗那层**全屏 backdrop-filter**
+// 必须跟着每帧重算 ⇒ GPU 进程吃满(实测空闲态 ~100% 单核)。三条各锁一半成因。
+const panelCss = injectedStyles[0].textContent;
+const cardAfterBase = /\n\.sap-card::after \{([^}]*)\}/.exec(panelCss);
+check("CSS:扫描光默认不动,只有 data-busy 才开(空闲态不许有常驻动画)",
+	cardAfterBase !== null && cardAfterBase[1].includes("opacity: 0") && !cardAfterBase[1].includes("animation")
+	&& /\.sap-root\[data-busy="true"\] \.sap-card::after \{[^}]*animation: sap-scan/.test(panelCss),
+	cardAfterBase === null ? "没找到 base 规则" : cardAfterBase[1].trim());
+const sweepKeyframes = /@keyframes sap-sweep \{([^}]*)\}/.exec(panelCss);
+check("CSS:运行中磁贴的流光动 transform,不动 left(left 每帧触发整份文档重排)",
+	sweepKeyframes !== null && sweepKeyframes[1].includes("translateX") && !sweepKeyframes[1].includes("left:"),
+	sweepKeyframes === null ? "没找到 keyframes" : sweepKeyframes[1].trim());
+check("源码:心跳空闲 30 秒、有任务才 1 秒(空闲时不每秒重渲染整张卡片)",
+	code.includes("useNow(runningRef.current > 0 ? 1000 : 30000)"));
+
 // ------------------------------------------------------------------ 2. 席位注册
 
 let registered = null;
@@ -485,6 +501,10 @@ const panelProps = {
 	useSessionPendingInteraction: () => undefined,
 };
 const tree = render(jsx(registered.component, panelProps));
+
+check("卡片带 data-busy=true(有任务在跑 ⇒ 才允许扫描光与每秒心跳)",
+	byClass(tree, "sap-root")[0]?.props["data-busy"] === "true",
+	String(byClass(tree, "sap-root")[0]?.props["data-busy"]));
 
 check("卡片渲染出来", byClass(tree, "sap-card").length === 1);
 check("默认只显示活跃任务:2 个分组", byClass(tree, "sap-folder").length === 2,
@@ -872,6 +892,9 @@ const emptyProps = {
 const tree4 = render(jsx(registered.component, emptyProps));
 check("无子代理任务时显示雷达空态", byClass(tree4, "sap-radar").length === 1
 	&& byClass(tree4, "sap-empty").length === 1);
+check("空闲时 data-busy=false(扫描光与每秒心跳都随之关掉)",
+	byClass(tree4, "sap-root")[0]?.props["data-busy"] === "false",
+	String(byClass(tree4, "sap-root")[0]?.props["data-busy"]));
 check("空态文案就是一句「无活跃子代理」(不再缀「雷达静默」)",
 	byClass(tree4, "sap-empty-text")[0]?.props.children === "无活跃子代理",
 	String(byClass(tree4, "sap-empty-text")[0]?.props.children));

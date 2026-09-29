@@ -112,10 +112,18 @@ body[data-ds-dark-theme] .sap-root, [data-ds-dark-theme] .sap-root {
   mask-image: radial-gradient(120% 100% at 0% 0%, #000 30%, transparent 78%);
   -webkit-mask-image: radial-gradient(120% 100% at 0% 0%, #000 30%, transparent 78%);
 }
+/* 扫描光:默认**不动**。它是常驻的无限动画,而这张卡片带 mask 的伪元素 + overflow:clip,
+   无法走纯合成路径 ⇒ 宿主 GPU 进程按帧率重绘整张卡片(实测空闲态 ~100% 单核);
+   设置窗那层全屏 backdrop-filter 又必须跟着每帧重算 —— 两窗同开就卡死。
+   所以只在真有任务在跑时开(见下面 data-busy 那条)。 */
 .sap-card::after {
   content: ""; position: absolute; left: 0; right: 0; top: 0; height: 42%; z-index: 0; pointer-events: none;
   background: linear-gradient(180deg, var(--sap-scan) 0%, rgba(0, 0, 0, 0) 100%);
   transform: translateY(-120%);
+  opacity: 0;
+}
+.sap-root[data-busy="true"] .sap-card::after {
+  opacity: 1;
   animation: sap-scan 5.6s var(--ds-ease-in-out, ease) infinite;
 }
 @keyframes sap-scan {
@@ -287,11 +295,14 @@ body[data-ds-dark-theme] .sap-root, [data-ds-dark-theme] .sap-root {
   box-shadow: inset 0 0 0 1px var(--sap-accent);
 }
 .sap-tile[data-tone="run"]::after {
-  content: ""; position: absolute; top: 0; left: -60%; width: 55%; height: 100%;
+  content: ""; position: absolute; top: 0; left: 0; width: 55%; height: 100%;
   background: linear-gradient(90deg, rgba(0, 0, 0, 0) 0%, var(--sap-glow) 50%, rgba(0, 0, 0, 0) 100%);
+  transform: translateX(-109%);
   animation: sap-sweep 2.6s linear infinite;
 }
-@keyframes sap-sweep { 0% { left: -60%; } 100% { left: 110%; } }
+/* 动 transform,不动 left:left 是布局属性,每帧会让整个文档重排(实测这是最贵的一种动画)。
+   -109% → 200% 是等价行程换算:元素自身宽度 = 磁贴的 55%,所以 -60%/55% ≈ -109%、110%/55% = 200%。 */
+@keyframes sap-sweep { 0% { transform: translateX(-109%); } 100% { transform: translateX(200%); } }
 .sap-tile-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .sap-dot { position: relative; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--sap-fg-3); color: var(--sap-fg-3); }
 .sap-tile[data-tone="run"] .sap-dot { background: var(--sap-run); color: var(--sap-run); }
@@ -1374,7 +1385,11 @@ body:not([data-ds-dark-theme]) { --dsw-alias-state-warn-primary: #8a4700; }
 			}
 
 			function Panel(props) {
-				const now = useNow(1000);
+				// 心跳:有任务在跑时 1 秒(卡片上的「已运行 xx 秒 / tok/s」要跟着动),空闲时 30 秒。
+				// 恒定 1 秒的代价是整张卡片每秒重渲染一次,连带动画与样式每帧失效;
+				// 空闲时这些数字没人看,不值得让宿主 GPU 一直为此烧。runningRef 由下面算出的 active 回填。
+				const runningRef = React.useRef(0);
+				const now = useNow(runningRef.current > 0 ? 1000 : 30000);
 				// shell.overlay 的 root 标准钩子由 ui-session 提供;万一某个部署里没提供,
 				// 卡片应该退化成空态,而不是抛异常把宿主界面弄坏。
 				const useSessions = typeof props.useSessions === "function"
@@ -1400,6 +1415,8 @@ body:not([data-ds-dark-theme]) { --dsw-alias-state-warn-primary: #8a4700; }
 					});
 				}, [external, natives]);
 				const active = React.useMemo(() => entries.filter((entry) => entry.running), [entries]);
+				// 回填给上面的心跳:只有"真有任务在跑"才需要每秒重渲染(见 data-busy 的 CSS 说明)。
+				runningRef.current = active.length;
 				const nativeCount = natives.length;
 				const [showHistory, setShowHistory] = React.useState(initial.history === true);
 				const [collapsed, setCollapsed] = React.useState(initial.collapsed === true);
@@ -1642,6 +1659,9 @@ body:not([data-ds-dark-theme]) { --dsw-alias-state-warn-primary: #8a4700; }
 					className: "sap-root",
 					"data-collapsed": String(collapsed),
 					"data-sized": String(sized),
+					// 只在真有任务在跑时为 true:扫描光动画与每秒心跳都挂在这个开关上
+					// (空闲时两者都停,否则宿主 GPU 进程会一直被这两处拖着烧)。
+					"data-busy": String(active.length > 0),
 					style: { ...style, "--sap-zoom": String(zoom), ...sizeStyle },
 					children: jsx("div", {
 						className: "sap-zoom",

@@ -2,7 +2,7 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/);日期为本地实测日期。
 
-## [未发布]
+## [0.1.11] — 2026-09-29
 
 ### 新增
 
@@ -33,13 +33,34 @@
 
 - 连接收尾只会执行一次(原先 stdin 的 `end` 与 `close` 会各走一遍 `shutdown`,
   生命周期日志里出现两条重复的退出原因)。
+- **面板不再拖着宿主 GPU 进程一直烧**(现象:子代理面板与设置窗同时打开时界面卡死):卡片上的
+  扫描光原本是**常驻**的无限动画,而这张卡片带 `mask-image` 的伪元素 + `overflow: hidden`,
+  走不了纯合成路径 ⇒ 宿主按帧率重绘整张卡片;实测**空闲态**(没有任何任务在跑)GPU 进程
+  仍吃满 ~100% 单核,而设置窗那层是**全视口** `backdrop-filter` —— 背后内容一变就必须重算,
+  两者相乘就是那个"卡死"。三处一起改:
+  ① 扫描光只在真有任务在跑时才动(`.sap-root[data-busy="true"]`,空闲时动画整个关掉);
+  ② 运行中磁贴的流光从 `left` 改成 `transform: translateX`(`left` 是布局属性,每帧触发整份
+  文档重排;行程按元素自身宽度换算,−60%/55% ≈ −109%、110%/55% = 200%,视觉不变);
+  ③ 面板心跳由恒定 1 秒改成「有任务在跑 1 秒 / 空闲 30 秒」,省掉空闲时每秒一次的整卡重渲染。
+  代价是两处**故意**的可见变化:空闲时卡片不再有那层缓慢扫过的光泽;空闲时「已耗时」这类
+  数字每 30 秒才走一格(有任务在跑时仍是每秒)。
 
 ### 校验
 
-- `npm run test:all` → 392 项(selftest 102、panel 138、observer 49、launcher 13、ledger 20、
-  autostart 26、leaf 14、exec-surface 11、monitor-live 8、wait-policy 11);
-  新增两条断言:客户端关掉管道后 `state/mcp-lifecycle.log` 里必须留下退出原因与退出码,
+- `npm run test:all` → 397 项(selftest 102、panel 143、observer 49、launcher 13、ledger 20、
+  autostart 26、leaf 14、exec-surface 11、monitor-live 8、wait-policy 11)。本次实跑 **396/397**:
+  唯一红灯是 `wait-policy-probe` 的「`dsh_task_status` 默认自己等待,并等到终态」——
+  该探针给 `dsh_task_status` 的等待预算正好是它的默认值 30 秒,而**当前默认模型是
+  `claude-opus-5-5`(`reasoningEffort: high`)**,叶子任务在它上面会超过 30 秒,于是到点仍返回
+  `running`;连跑两次同样命中。与本次改动无关(改的是客户端 CSS 与面板心跳),
+  早前默认模型是 `deepseek-flash` 时该套件为 392 项全绿。
+- 新增两条断言:客户端关掉管道后 `state/mcp-lifecycle.log` 里必须留下退出原因与退出码,
   以及启动行必须带版本号。
+- 面板自检新增 5 条**性能防回归**断言(这个缺陷肉眼看不出来,只能靠闸门挡):
+  base 的 `.sap-card::after` 里不许出现 `animation`,扫描光只准挂在 `data-busy="true"` 规则上;
+  `@keyframes sap-sweep` 只准动 `transform`、不许出现 `left:`;
+  渲染出的 `.sap-root` 在有任务在跑时必须是 `data-busy="true"`、空闲时必须 `"false"`;
+  以及心跳源文本必须是「有任务 1000 / 空闲 30000」。
 
 ## [0.1.10] — 2026-09-21
 
