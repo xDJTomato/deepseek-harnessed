@@ -652,7 +652,7 @@ Token 折叠逻辑遵循同轮次 `(turn, step)` 的 `assistant/chunk(chunk.type
 
 ```powershell
 # 卡片逻辑(离线:假 window/__ModuleLoader__ + 迷你 React,真跑组件函数)
-node $env:USERPROFILE\.dsh\subagent\test\panel-selftest.mjs            # 138 项
+node $env:USERPROFILE\.dsh\subagent\test\panel-selftest.mjs            # 143 项
 # 观察器侧(隔离 DSH_HOME 造假任务现场,投影里带出 model/provider/reasoningEffort/只读转录)
 node $env:USERPROFILE\.dsh\subagent\test\observer-selftest.mjs          # 49 项
 
@@ -839,7 +839,7 @@ CLI 命令行支持参数：`--expected-seconds <n>`、`--acceptance <text>`、`
 │   ├── concurrency-probe.mjs 并发(N 路同时委托)+ 取消验证
 │   ├── tasks-probe.mjs       只验任务层的小烟测
 │   ├── session-perm-probe.mjs 解开某个会话日志,打印它**实际生效**的权限事实
-│   ├── panel-selftest.mjs    悬浮卡片逻辑自检(离线 138 项)
+│   ├── panel-selftest.mjs    悬浮卡片逻辑自检(离线 143 项)
 │   ├── observer-selftest.mjs GUI 观察器自检(49 项,含心跳+规则版本、残留记录收尾、pid 宽限期、token 折叠、吞吐窗口、只读转录、0.1.5 新日志名)
 │   ├── exec-surface-probe.mjs 执行面自检脚本(11 项:会话日志改名兼容 + 沙箱"空转成功"的判定与零误报)
 │   ├── live-audit.mjs        活跃审计:真在跑/残留记录/没记 pid/宿主状态/最近任务耗时(--fix 订正残留记录)
