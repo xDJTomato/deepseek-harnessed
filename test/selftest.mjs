@@ -109,16 +109,60 @@ function payloadOf(text) {
 }
 
 /**
- * 自检侧的**独立**实现(刻意不复用 server 的解析):只从 `llm-pi-ai` 段的 models 数组里取 id,
- * 用来交叉核对 server 那边枚举出来的顺序与去重。
+ * 模型清单的**有序来源清单** —— 与 server 侧同一份口径(见 lib/mcp.mjs 的 modelSourcePaths):
+ * 桥接层真正启动的叶子 profile patch → home 层 patch → 旧位置 settings.yaml → 迁移副本。
+ * DSH 0.1.7 起 `settings.yaml` 会被一次性迁移成 `settings.yaml.imported`,所以缺哪份就跳过哪份。
+ */
+function modelSourcePaths(home = process.env.DSH_HOME ?? join(homedir(), '.dsh')) {
+	return [
+		join(home, 'profiles', 'subagent', 'cordis.patch.yml'),
+		join(home, 'cordis.patch.yml'),
+		join(home, 'settings.yaml'),
+		join(home, 'settings.yaml.imported'),
+	];
+}
+
+/**
+ * 一份文件里的模型 id(出现顺序,不跨文件去重):只认 `models:` 列表里的 id ——
+ * 流式(`models: [ … ]`,按方括号深度找结束)与块式(`models:` 下面缩进的 `- id: …`,按缩进找结束)
+ * 两种形状都认。**不**全文件扫 `id:`:文件别处也会有 `id:`(例如 `- id: llm-pi-ai` 这种条目名)。
+ */
+function modelIdsInFile(text) {
+	const ids = [];
+	let block = null; // 当前 `models:` 列表:{depth} 流式看剩余方括号深度,{limit} 块式看列表缩进
+	for (const line of text.split('\n')) {
+		const indent = line.search(/\S/);
+		if (indent < 0) continue;
+		if (block !== null && block.depth === undefined && indent <= block.limit) block = null;
+		if (block !== null && block.depth !== undefined) {
+			block.depth += (line.match(/\[/g) ?? []).length - (line.match(/\]/g) ?? []).length;
+			if (block.depth <= 0) block = null;
+		} else if (block === null) {
+			const rest = /^\s*models\s*:(.*)$/.exec(line)?.[1];
+			if (rest !== undefined) {
+				const depth = (rest.match(/\[/g) ?? []).length - (rest.match(/\]/g) ?? []).length;
+				block = depth > 0 ? { depth } : /^\s*\[/.test(rest) ? null : { limit: indent };
+			}
+		}
+		if (block === null) continue;
+		for (const match of line.matchAll(/\bid\s*:\s*([^\s,}\]]+)/g)) ids.push(match[1]);
+	}
+	return ids;
+}
+
+/**
+ * 自检侧的**独立**实现(刻意不复用 server 的解析):按上面那份有序来源清单逐文件取模型 id,
+ * 跨文件去重并保持文件与文件内的出现顺序,用来交叉核对 server 那边枚举出来的顺序与去重。
  */
 function installedModelIds() {
-	const home = process.env.DSH_HOME ?? join(homedir(), '.dsh');
-	const text = readFileSync(join(home, 'settings.yaml'), 'utf8');
-	const start = text.indexOf('llm-pi-ai:');
-	const end = text.indexOf('agent-default-model:');
-	const section = start < 0 ? '' : text.slice(start, end > start ? end : undefined);
-	return [...section.matchAll(/\bid:\s*([^\s,}\]]+)/g)].map((match) => match[1]);
+	const ids = [];
+	for (const path of modelSourcePaths()) {
+		if (!existsSync(path)) continue;
+		for (const id of modelIdsInFile(readFileSync(path, 'utf8'))) {
+			if (!ids.includes(id)) ids.push(id);
+		}
+	}
+	return ids;
 }
 
 async function main() {
@@ -130,8 +174,9 @@ async function main() {
 	// 这里只验证"接线"(字段有没有出现在结果里),所以显式关掉总开关。
 	//
 	// 策略文件**隔离**:落盘断言一律打在临时副本上,绝不改仓库里那份 config/model-policy.md(发布物)。
-	// DSH_HOME 这里仍用**真实**的那份 —— 模型清单的权威来源就是 $DSH_HOME/settings.yaml,
-	// 隔离成空目录就枚举不到已接入模型了(隔离 DSH_HOME 的两条断言在 7b/7c 另起连接做)。
+	// DSH_HOME 这里仍用**真实**的那份 —— 模型清单的权威来源是那一串有序来源文件(叶子 profile patch →
+	// home 层 patch → settings.yaml → settings.yaml.imported,见 modelSourcePaths),隔离成空目录就
+	// 枚举不到已接入模型了(隔离 DSH_HOME 的两条断言在 7b/7c 另起连接做)。
 	//
 	// 副本里把「默认模型」那行**显式改成 `(未指定)`**:那是"首次接入引导"要测的状态,
 	// 而策略文件是**用户可编辑**的 —— 用户随手设了默认模型之后,拿仓库里那份当"未指定"用,
@@ -242,9 +287,9 @@ async function main() {
 		&& expectedTaskWait < 60 && expectedStatusWait < 60,
 		`default=${expectedTaskWait}s status=${expectedStatusWait}s`);
 
-	// 3e. 已接入模型:权威来源 $DSH_HOME/settings.yaml,而且**只在 models 数组里取 id**
-	//     (本机这份文件里 43 处 id: 恰好全是模型 id;换机器/换配置就可能混进非模型的 id,
-	//      所以代码按 models 数组范围取 —— decoy 断言在 7b 用合成的临时 settings.yaml 覆盖)
+	// 3e. 已接入模型:权威来源是 modelSourcePaths() 那份有序清单(叶子 profile patch 排第一,
+	//     其次 home 层 patch、旧位置 settings.yaml、迁移副本 settings.yaml.imported),
+	//     而且**只在 models 列表里取 id**(列表别处的 `id:` 不算模型;decoy 断言在 7b 用合成夹具覆盖)
 	const healthPayload = payloadOf(health);
 	const modelsInfo = healthPayload.models ?? {};
 	const providers = modelsInfo.providers ?? {};
@@ -261,13 +306,14 @@ async function main() {
 	check('枚举结果覆盖策略文件里预设点名的模型',
 		presetModel !== '' && installed.includes(presetModel),
 		`预设点名 ${presetModel} / 共 ${installed.length} 个:${installed.slice(0, 3).join(', ')} …`);
-	check('models 按文件出现顺序枚举且去重',
-		installed.length === expectedModels.length && installed.every((id, index) => id === expectedModels[index]),
-		`读到 ${installed.length} 个 / 文件里 ${expectedModels.length} 个`);
+	check('models.all 按来源文件与文件内出现顺序枚举且去重',
+		Array.isArray(modelsInfo.all) && modelsInfo.all.length === expectedModels.length
+		&& modelsInfo.all.every((id, index) => id === expectedModels[index]),
+		`读到 ${(modelsInfo.all ?? []).length} 个 / 文件里 ${expectedModels.length} 个`);
 	check('models.providers 不含非模型的 id', modelsInfo.error === null && !installed.includes('dsh-deco-plugin'),
 		`error=${JSON.stringify(modelsInfo.error)}`);
 	const defaultParts = String(modelsInfo.defaultModel ?? '').split('/');
-	check('models.defaultModel 用 <provider>/<model> 形式回报 settings.yaml 的 agent-default-model',
+	check('models.defaultModel 用 <provider>/<model> 形式回报来源文件里的 agent-default-model',
 		modelsInfo.defaultModel === null
 		|| (defaultParts.length >= 2 && (providers[defaultParts[0]] ?? []).includes(defaultParts.slice(1).join('/'))),
 		String(modelsInfo.defaultModel));
@@ -476,9 +522,9 @@ async function main() {
 		JSON.stringify(debugClient.stderrText.trim().slice(0, 120)));
 	debugClient.close();
 
-	// 7b. 隔离 DSH_HOME:模型清单只能来自 models 数组 —— **非模型的 `id:` 键不许混进来**。
-	//     真实 settings.yaml 里目前没有别处的 id:,所以这里造一个 decoy 把这条钉住;
-	//     顺带覆盖"重复 id 去重"与"llm-deepseek 的空数组不产生 provider"。
+	// 7b. 隔离 DSH_HOME:模型清单只能来自 `models:` 列表 —— **非模型的 `id:` 键不许混进来**。
+	//     隔离 home 里只有旧形状的 settings.yaml(流式,0.1.7 之前的位置),正好把"旧格式兼容路径不能删"
+	//     一起钉住;顺带覆盖"重复 id 去重"与"llm-deepseek 的空数组不产生 provider"。
 	const isolatedHome = mkdtempSync(join(tmpdir(), 'dsh-subagent-selftest-home-'));
 	writeFileSync(join(isolatedHome, 'settings.yaml'), [
 		'plugins:',
@@ -533,7 +579,79 @@ async function main() {
 		JSON.stringify(isolatedPayload.modelPolicy?.presets));
 	isolatedClient.close();
 
-	// 7c. settings.yaml 缺失:枚举不到模型时**响亮报 error**,既不抛异常也不假装有模型
+	// 7b2. 隔离 DSH_HOME:块式(缩进)写法 —— 叶子 profile patch 里的
+	//      `providers.<route>.models` 是 `- id:` 列表(0.1.7 起设置改由 profile patch 层承载),
+	//      再叠一份流式的 settings.yaml.imported:同一 route 取并集、去重、保序,靠前的文件先出。
+	const blockHome = mkdtempSync(join(tmpdir(), 'dsh-subagent-selftest-block-'));
+	mkdirSync(join(blockHome, 'profiles', 'subagent'), { recursive: true });
+	writeFileSync(join(blockHome, 'profiles', 'subagent', 'cordis.patch.yml'), [
+		'# 块式写法:route 名在 providers: 下面那一层(比 route 更深的 compat: 不算 route)',
+		'- insert:',
+		'    - id: llm-pi-ai',
+		'      config:',
+		'        providers:',
+		'          demo-block-a:',
+		'            apiKeyEnv: DEMO_BLOCK_KEY',
+		'            baseURL: https://example.invalid/v1',
+		'            models:',
+		'              - id: block-one',
+		'              - id: block-two',
+		'          demo-block-b:',
+		'            compat:',
+		'              supportsDeveloperRole: false',
+		'            models:',
+		'              - id: block-three',
+		'              - id: block-one',
+		'agent-default-model:',
+		'  provider: demo-block-a',
+		'  model: block-one',
+		'',
+	].join('\n'), 'utf8');
+	writeFileSync(join(blockHome, 'settings.yaml.imported'), [
+		'llm-pi-ai:',
+		'  providers:',
+		'    {',
+		'      demo-block-a:',
+		'        {',
+		'          apiKeyEnv: DEMO_BLOCK_KEY,',
+		'          models:',
+		'            [',
+		'              { id: block-two },',
+		'              { id: block-four }',
+		'            ]',
+		'        }',
+		'    }',
+		'llm-deepseek:',
+		'  models: []',
+		'agent-default-model:',
+		'  provider: demo-block-a',
+		'  model: block-four',
+		'',
+	].join('\n'), 'utf8');
+	const blockClient = new Client(process.execPath, [MCP_ENTRY], {
+		DSH_SUBAGENT_AUTOSTART_MONITOR: 'off',
+		DSH_HOME: blockHome,
+		DSH_SUBAGENT_POLICY: join(blockHome, 'no-such-policy.md'),
+	});
+	await blockClient.request('initialize', {
+		protocolVersion: '2025-06-18',
+		capabilities: { roots: { listChanged: true } },
+		clientInfo: { name: 'dsh-subagent-selftest-block', version: '0.0.1' },
+	});
+	const blockPayload = payloadOf(textOf(await blockClient.request('tools/call', { name: 'dsh_health', arguments: {} })));
+	check('块式列表也认:route 名取 providers 下一层(更深的 compat: 不算),列表外的 id: 不算模型',
+		JSON.stringify(blockPayload.models?.providers)
+			=== JSON.stringify({ 'demo-block-a': ['block-one', 'block-two', 'block-four'], 'demo-block-b': ['block-three'] })
+		&& !(blockPayload.models?.all ?? []).includes('llm-pi-ai'),
+		JSON.stringify(blockPayload.models?.providers));
+	check('多来源合并:同一 route 取并集、去重保序,靠前的来源文件先出',
+		JSON.stringify(blockPayload.models?.all) === JSON.stringify(['block-one', 'block-two', 'block-three', 'block-four'])
+		&& blockPayload.models?.defaultModel === 'demo-block-a/block-one'
+		&& blockPayload.models?.error === null,
+		`${JSON.stringify(blockPayload.models?.all)} defaultModel=${String(blockPayload.models?.defaultModel)}`);
+	blockClient.close();
+
+	// 7c. 一份来源文件都没有:枚举不到模型时**响亮报 error**,既不抛异常也不假装有模型
 	const bareHome = mkdtempSync(join(tmpdir(), 'dsh-subagent-selftest-bare-'));
 	const bareClient = new Client(process.execPath, [MCP_ENTRY], {
 		DSH_SUBAGENT_AUTOSTART_MONITOR: 'off',
@@ -546,10 +664,13 @@ async function main() {
 		clientInfo: { name: 'dsh-subagent-selftest-bare', version: '0.0.1' },
 	});
 	const barePayload = payloadOf(textOf(await bareClient.request('tools/call', { name: 'dsh_health', arguments: {} })));
-	check('settings.yaml 缺失 → models.error 如实报告且 providers 为空',
-		typeof barePayload.models?.error === 'string' && barePayload.models.error.includes('settings.yaml')
+	check('来源文件全缺失 → models.error 如实报告且 providers 为空',
+		typeof barePayload.models?.error === 'string'
 		&& Object.keys(barePayload.models?.providers ?? {}).length === 0,
 		JSON.stringify(barePayload.models?.error));
+	check('models.error 点出实际搜过的来源清单(不再只提 settings.yaml)',
+		modelSourcePaths(bareHome).every((path) => String(barePayload.models?.error ?? '').includes(path)),
+		String(barePayload.models?.error ?? '').slice(0, 200));
 	const bareSetup = await bareClient.request('tools/call', { name: 'dsh_setup', arguments: { default_model: 'deepseek-v4.1-flash' } });
 	check('枚举不到模型时 dsh_setup 响亮拒绝(不静默写坏策略文件)',
 		bareSetup?.isError === true && /settings\.yaml/.test(textOf(bareSetup)), textOf(bareSetup).slice(0, 80));

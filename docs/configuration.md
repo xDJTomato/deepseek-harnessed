@@ -62,7 +62,7 @@
 
 ### 1.5 模型策略配置
 
-可用模型列表由 DSH 实例自身提供（读取 `$DSH_HOME/settings.yaml` 中 `models` 数组声明的 ID），桥接层不硬编码模型标识。模型选择规则保存在用户可编辑的策略文件中，每次任务分派时实时读取。
+可用模型列表由 DSH 实例自身提供（按序读 `$DSH_HOME/profiles/subagent/cordis.patch.yml` → `$DSH_HOME/cordis.patch.yml` → `settings.yaml.imported` → 旧位置 `settings.yaml`，取其中 `providers.<route>.models[]` 与 `llm-deepseek.models` 声明的 ID），桥接层不硬编码模型标识。模型选择规则保存在用户可编辑的策略文件中，每次任务分派时实时读取。
 
 | 配置项 | 说明与路径 |
 | --- | --- |

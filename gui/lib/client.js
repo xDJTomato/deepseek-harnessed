@@ -195,9 +195,13 @@ body[data-ds-dark-theme] .sap-root, [data-ds-dark-theme] .sap-root {
   background: currentColor; color: var(--sap-fg-3);
 }
 .sap-live[data-active="true"] .sap-pulse { color: var(--sap-run); }
+/* 脉冲光环:同样默认**不动**。它原来是无条件无限动画 —— 面板只要在屏幕上就每帧重绘,
+   叠上宿主设置窗那层全屏 backdrop-filter 就是持续 GPU 占用。只有真有任务在跑时才开。 */
 .sap-pulse::before {
   content: ""; position: absolute; inset: 0; border-radius: 50%;
   background: currentColor; opacity: .28;
+}
+.sap-live[data-active="true"] .sap-pulse::before {
   animation: sap-halo 2.1s var(--ds-ease-in-out, ease) infinite;
 }
 @keyframes sap-halo {
@@ -342,12 +346,13 @@ body[data-ds-dark-theme] .sap-root, [data-ds-dark-theme] .sap-root {
   border: 1px solid var(--sap-accent);
   box-shadow: inset 0 0 12px var(--sap-glow);
 }
+/* 空态雷达:空态 = **空闲态**,原来这里是个 2.8s 无限旋转的 conic-gradient ——
+   没有任务在跑时反而一直在转、一直在重绘,正是「只要 DSH 显示就吃 GPU」的一部分。
+   改为静止:扇形扫描面留着,不再动。 */
 .sap-radar::before {
   content: ""; position: absolute; inset: 0; border-radius: 50%;
   background: conic-gradient(from 0deg, var(--sap-glow) 0deg, rgba(0, 0, 0, 0) 68deg, rgba(0, 0, 0, 0) 360deg);
-  animation: sap-radar 2.8s linear infinite;
 }
-@keyframes sap-radar { to { transform: rotate(360deg); } }
 .sap-empty-text { font-size: 12px; line-height: 17px; }
 
 .sap-drawer {
@@ -427,7 +432,7 @@ body[data-ds-dark-theme] .sap-root, [data-ds-dark-theme] .sap-root {
 .sap-stat[data-live="true"] { color: var(--sap-run); font-weight: 600; }
 .sap-stat-sep { color: var(--sap-line); font-style: normal; }
 @media (prefers-reduced-motion: reduce) {
-  .sap-card::after, .sap-pulse::before, .sap-radar::before, .sap-tile[data-tone="run"]::after,
+  .sap-card::after, .sap-pulse::before, .sap-tile[data-tone="run"]::after,
   .sap-tile[data-tone="run"] .sap-dot::before, .sap-tile[data-tone="err"] .sap-dot::before { animation: none !important; }
   .sap-grid { animation: none !important; }
 }

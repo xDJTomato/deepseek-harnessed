@@ -20,6 +20,8 @@ import process from 'node:process';
 
 const BRIDGE_ROOT = join(process.env.USERPROFILE ?? process.cwd(), '.dsh', 'subagent');
 const HOME = process.env.DSH_HOME ?? join(process.env.USERPROFILE ?? process.cwd(), '.dsh');
+// 上限,不是目标值:这个探针要证的是"没被拉出第二个 GUI 宿主",0 个也满足
+// (GUI 空闲时可能一个活着的 `--type=` 渲染子进程都没有,数出来就是 0)。
 const MAX_HOSTS_BEFORE = 1;
 
 const checks = [];
@@ -143,8 +145,8 @@ if (heartbeat !== null) {
 }
 
 const hostsBefore = await guiHostPids();
-check('跑之前只有一个 GUI 宿主(没有重复宿主)', hostsBefore !== null && hostsBefore.length === MAX_HOSTS_BEFORE,
-	hostsBefore === null ? '查不到进程表' : 'pids=' + hostsBefore.join(','));
+check('跑之前没有重复的 GUI 宿主(≤1 个)', hostsBefore !== null && hostsBefore.length <= MAX_HOSTS_BEFORE,
+	hostsBefore === null ? '查不到进程表' : `pids=${hostsBefore.join(',')}(0 个 = 这一刻没有活着的渲染子进程,同样算没重复)`);
 
 const logLinesBefore = readLog().length;
 const workspace = mkdtempSync(join(tmpdir(), 'dsh-monitor-live-'));

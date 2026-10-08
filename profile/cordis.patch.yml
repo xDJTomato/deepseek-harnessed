@@ -133,3 +133,16 @@
         provider: !!js ctx.subagentStartup.provider
         model: !!js ctx.subagentStartup.model
         reasoningEffort: !!js ctx.subagentStartup.reasoningEffort
+
+# 8. LLM 服务商与默认模型 —— 本机私有,不进公开仓库
+#    叶子进程(`dsh --profile subagent`)必须能解析到服务商,否则 dsh_task 一起来就报
+#    「no adapter registered for provider …」。而 provider 配置里带着内网网关地址与密钥
+#    环境变量名,属于机器本地信息,不能提交到公开仓库。
+#    所以这段由 install.mjs 在安装时从**本机自己的配置**里取出来,写进
+#    `$DSH_HOME/profiles/subagent/cordis.patch.yml` 尾部那个 `dsh-subagent-llm-providers`
+#    标记块里 —— 那个文件在仓库之外(仓库是 `$DSH_HOME/subagent`),不会被提交。取用顺序:
+#      1. `DSH_SUBAGENT_PROVIDERS_FILE` 指定的 patch 片段(整份当 provider 块用);
+#      2. `$DSH_HOME/llm-providers.patch.yml`(自己放的片段);
+#      3. 否则从本机已有配置里抽 `llm-pi-ai` 条目:desktop profile 的 patch → home 层
+#         → settings.yaml.imported → settings.yaml(0.1.7 之前的位置)。
+#    改默认模型请改 config/model-policy.md;改 provider 请改上面那份本机文件后重跑 install。

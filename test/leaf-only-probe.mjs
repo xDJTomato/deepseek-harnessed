@@ -19,6 +19,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import process from 'node:process';
 import zlib from 'node:zlib';
+import { childEnv, resolveLauncher } from '../lib/launcher.mjs';
 
 const HOME = process.env.DSH_HOME ?? join(homedir(), '.dsh');
 
@@ -39,6 +40,9 @@ const GATE_ROWS = [
  * (`--dump-config` 里查不到),`subagent-report` 变成了会话协议里的一个消息 kind
  * (`case "coordinator": case "subagent-report"`)。行没了却继续断言它"没被误关",
  * 会以 `undefined` 形式误报失败 —— 这正是 DSH 升级后本探针唯一的失败项。
+ * 同一条口径适用于下面 GATE_ROWS 里的 `workflow-worker-thread`:DSH 2.0.15 的配置树里
+ * 已经没有这一行了(DSH 自己会报 `patch: entry "workflow-worker-thread" not found`),
+ * 所以"行不存在"按关闭算 —— 没挂载就无从分叉,不拿它当失败项。
  */
 const KEEP_ROWS = ['tool-fs', 'tool-pwsh', 'tool-bash', 'tool-goal', 'tool-todo', 'tool-web'];
 /** 工具表里不该出现的名字(分叉通道)。 */
@@ -50,10 +54,14 @@ const check = (name, ok, detail) => checks.push([name, ok, detail]);
 // ------------------------------------------------------------------ 1. 配置级
 
 function dumpConfig() {
-	const out = execFileSync('dsh', ['--profile', 'subagent', '--dump-config'], {
+	// 用桥接层自己的启动器解析(`lib/launcher.mjs`),不靠 PATH 里有 `dsh`:
+	// 本机 pwsh / Git Bash 都没有它,直接 `execFileSync('dsh', …)` 会 `'dsh' is not recognized`。
+	const launcher = resolveLauncher();
+	const out = execFileSync(launcher.command, [...launcher.args, '--profile', 'subagent', '--dump-config'], {
 		encoding: 'utf8',
-		shell: true,
+		env: childEnv(launcher),
 		maxBuffer: 64 * 1024 * 1024,
+		timeout: 120000,
 	});
 	return out;
 }
@@ -78,7 +86,15 @@ const dump = dumpConfig();
 const rows = rowsOf(dump);
 check('读到 subagent profile 的行表', rows.size > 50, 'rows=' + rows.size);
 for (const id of GATE_ROWS) {
-	check('闸门行已关闭: ' + id, rows.get(id) === false, rows.get(id) === undefined ? '行不存在' : String(rows.get(id)));
+	// 行不存在 = 这一版 DSH 没有这个 loader 行(2.0.15 起 `workflow-worker-thread` 就是这种:
+	// dump 里查不到,DSH 自己还会报 `patch: entry "workflow-worker-thread" not found`)。
+	// 没挂载就无从分叉,与 `tool-subagent-report` 同一口径:不算失败,但把"行不存在"写清楚。
+	const value = rows.get(id);
+	check(
+		'闸门行已关闭: ' + id,
+		value === false || value === undefined,
+		value === undefined ? '行不存在(这一版 DSH 没有这个 loader 行)' : String(value),
+	);
 }
 for (const id of KEEP_ROWS) {
 	check('没有被误关: ' + id, rows.get(id) === true, String(rows.get(id)));

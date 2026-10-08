@@ -179,8 +179,8 @@ MCP 服务器名称统一为 **`dsh`**，在各客户端中工具名称形如 `m
 | `workspace` | 可选字符串 | 目标工作空间的绝对路径；缺省时依次尝试外部调用方工作空间（MCP roots）与服务器当前工作目录（server cwd） |
 | `wait_seconds` | 可选数值（默认 45） | 本次调用最多阻塞等待的秒数（默认 45 秒短超时，推荐直接省略）；传入 `0` 表示立即返回 `job_id`（不推荐，会拆解为多轮轮询，且不要传 `wait_seconds: 0`）。建议不要传递大于 60 的数值，多数 Agent 客户端单次工具超时阈值为 60 秒（见 §2.3） |
 | `timeout_seconds` | 可选数值（默认 1800） | 外层绝对超时时间（秒），作为第二重兜底保护，与 `expected_seconds` 截止机制同时生效 |
-| `model` / `provider` | 可选字符串 | 单次任务指定模型与服务商。模型清单动态从 `dsh_health` 中的 `models.providers`（权威来源源自 `$DSH_HOME/settings.yaml` 的 `models` 数组，包含 `file:` / `file:///` / `file:///…` 路径规则）获取，规则配置见 `config/model-policy.md`。可调用 `dsh_setup(preset: "本项目方案")` 切换预设。省略 `model` 沿用默认模型；指定未接入模型时直接报错（返回 `UNKNOWN_MODEL` 或 `NO_ADAPTER`），不进行静默回退 |
-| `reasoning_effort` | 可选字符串 | 单次任务指定推理强度档位（必须为该模型在 `settings.yaml` 的 `models[].reasoningEfforts` 中声明的档位，常见包括 `off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`）。传入未声明的档位时直接报错（返回 `UNSUPPORTED_REASONING_EFFORT` 快速失败，耗时约 0.5 秒且不调用模型）。结果头部回显 `model:` 与 `reasoning_effort:` 实际生效值 |
+| `model` / `provider` | 可选字符串 | 单次任务指定模型与服务商。模型清单动态从 `dsh_health` 中的 `models.providers`（权威来源是叶子 profile 的实际生效配置(`$DSH_HOME/profiles/subagent/cordis.patch.yml` → `$DSH_HOME/cordis.patch.yml` → `settings.yaml.imported` → 旧位置 `settings.yaml`,按序合并)；`models: [ … ]` 流式与 `models:` 下 `- id:` 块式两种写法都认）获取，规则配置见 `config/model-policy.md`。可调用 `dsh_setup(preset: "本项目方案")` 切换预设。省略 `model` 沿用默认模型；指定未接入模型时直接报错（返回 `UNKNOWN_MODEL` 或 `NO_ADAPTER`），不进行静默回退 |
+| `reasoning_effort` | 可选字符串 | 单次任务指定推理强度档位（必须为该模型在生效配置的 `models[].reasoningEfforts` 中声明的档位，常见包括 `off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`）。传入未声明的档位时直接报错（返回 `UNSUPPORTED_REASONING_EFFORT` 快速失败，耗时约 0.5 秒且不调用模型）。结果头部回显 `model:` 与 `reasoning_effort:` 实际生效值 |
 | `permission` | 可选字符串（默认 `danger-full-access`） | 权限模式：`read-only`、`workspace-write`、`danger-full-access` |
 | `raw_prompt` | 可选布尔值 | 为 `true` 时不附加默认的「委托说明」前缀，直接传递原始提示词 |
 
@@ -259,7 +259,8 @@ DSH_SUBAGENT_STATUS_WAIT_SECONDS=540   # dsh_task_status 的默认等待
 
 | 环节 | 技术实现与定义 |
 | --- | --- |
-| 已接入模型 | 通过 `dsh_health` 返回 `models:{ providers:{ <你的路由名>:[…] }, defaultModel, error }`（即 `dsh_health.models`），从 `$DSH_HOME/settings.yaml` 的 `llm-pi-ai.providers.<provider>.models`（以及 `llm-pi-ai.providers.<route>.models`）与 `llm-deepseek.models` 数组中解析 `id`（仅匹配 `id:` 字段）；文件异常时在 `error` 中记录原因 |
+| 已接入模型 | 通过 `dsh_health` 返回 `models:{ providers:{ <你的路由名>:[…] }, defaultModel, error }`（即 `dsh_health.models`），从叶子 profile 的实际生效配置(`$DSH_HOME/profiles/subagent/cordis.patch.yml` → `$DSH_HOME/cordis.patch.yml` → `settings.yaml.imported` → 旧位置 `settings.yaml`,按序合并)解析 `llm-pi-ai.providers.<route>.models` 与 `llm-deepseek.models` 里的 `id`（只认这两处，绝不整文件扫 `id:`）；一份可读文件都没有、或一处都没认出时，在 `error` 里点明实际搜过的路径。<br>注意 **provider 配置本身是本机私有信息**（含内网网关地址与密钥环境变量名），不进公开仓库：仓库的 `profile/cordis.patch.yml` 只留说明，真正的 `llm-pi-ai` 条目由 `install.mjs` 从本机已有配置里抽出并注入 `$DSH_HOME/profiles/subagent/cordis.patch.yml` 的 `dsh-subagent-llm-providers` 标记块（可用 `DSH_SUBAGENT_PROVIDERS_FILE` 或 `$DSH_HOME/llm-providers.patch.yml` 指定自己的片段） |
+| 模型清单来源 | 见上表「已接入模型」；DSH 0.1.7-rc.2 起设置改由 profile 的 patch 层承载，旧的 `$DSH_HOME/settings.yaml` 被一次性导入后改名成 `settings.yaml.imported` —— 两处都读，所以升级前后都枚举得到 |
 | 策略文件 | 路径为 `~/.dsh/subagent/config/model-policy.md`。顶部声明 `默认模型: <模型 id>`，`## 预设方案` 下包含各 `### <名字>` 分组与 `预设默认模型: <模型 id>` 行，`## 模型选择规则` 为说明文本。桥接层每次调用均重新读取该文件（可通过 `DSH_SUBAGENT_POLICY` 覆盖路径） |
 | 访问链接 | 通过 `dsh_health` 返回 `modelPolicy.path` 与 `modelPolicy.fileUrl`（如 `file:///C:/Users/…/model-policy.md`，使用 `modelPolicy` 统一管理） |
 | 预设方案 | 包含 `### 本项目方案`（`本项目方案`）：默认任务使用 `deepseek-v4.1-flash`，文档编写使用 `gemini-3.7-flash`，复杂任务由主模型直接处理 |
@@ -306,7 +307,7 @@ DSH_SUBAGENT_STATUS_WAIT_SECONDS=540   # dsh_task_status 的默认等待
 
 ### 3.1 推理强度配置（固定为 `high`）
 
-针对 `llm-pi-ai` 下你自己的路由，处理某个模型（例如 `deepseek-v4.1-flash`）的推理强度配置。在 `~/.dsh/settings.yaml` 中声明支持档位与默认强度：
+针对 `llm-pi-ai` 下你自己的路由，处理某个模型（例如 `deepseek-v4.1-flash`）的推理强度配置。在 DSH 的设置里声明支持档位与默认强度（0.1.7 之前是 `~/.dsh/settings.yaml`；之后设置由 profile 的 patch 层承载，例如 `$DSH_HOME/profiles/desktop/cordis.patch.yml` 里 `llm-pi-ai` 条目的 `config.providers`）：
 
 ```yaml
 llm-pi-ai:
@@ -577,7 +578,7 @@ node $env:USERPROFILE\.dsh\subagent\test\monitor-autostart-probe.mjs   # 26 项:
 自检测试：
 
 ```powershell
-node $env:USERPROFILE\.dsh\subagent\test\observer-selftest.mjs   # 49 项,含投影、僵尸/半成品判活、心跳+规则版本、token 折叠、吞吐窗口、只读转录、0.1.5 新日志名
+node $env:USERPROFILE\.dsh\subagent\test\observer-selftest.mjs   # 50 项,含投影、僵尸/半成品判活、心跳+规则版本、token 折叠、吞吐窗口、只读转录、0.1.5 新日志名
 node $env:USERPROFILE\.dsh\subagent\test\live-audit.mjs          # 现场审计:真的在跑几个 / 残留记录几个 / 宿主状态
 ```
 
@@ -652,9 +653,9 @@ Token 折叠逻辑遵循同轮次 `(turn, step)` 的 `assistant/chunk(chunk.type
 
 ```powershell
 # 卡片逻辑(离线:假 window/__ModuleLoader__ + 迷你 React,真跑组件函数)
-node $env:USERPROFILE\.dsh\subagent\test\panel-selftest.mjs            # 143 项
+node $env:USERPROFILE\.dsh\subagent\test\panel-selftest.mjs            # 144 项
 # 观察器侧(隔离 DSH_HOME 造假任务现场,投影里带出 model/provider/reasoningEffort/只读转录)
-node $env:USERPROFILE\.dsh\subagent\test\observer-selftest.mjs          # 49 项
+node $env:USERPROFILE\.dsh\subagent\test\observer-selftest.mjs          # 50 项
 
 # 真实任务日志 → token 用量折叠(逐帧解 zstd;只读)
 node $env:USERPROFILE\.dsh\subagent\test\usage-fold-probe.mjs --all
@@ -799,7 +800,7 @@ CLI 命令行支持参数：`--expected-seconds <n>`、`--acceptance <text>`、`
 排查方式：`status: deadline` 表示超出预估时间（需调整 `expected_seconds` 或拆分任务）；`status: timeout` 表示达到外层 `timeout_seconds` 上限；`status: stalled` 表示看门狗检测到长时间无进展（详见 §6.2）。同时应确认外部客户端的工具调用超时配置（如 `MCP_TOOL_TIMEOUT`）。
 
 **Q: 如何切换模型？**
-- 查询可用模型：通过 `dsh_health` 的 `models.providers`（即 `dsh_health.models`）查看当前实例已接入的模型列表（源自 `$DSH_HOME/settings.yaml`）。
+- 查询可用模型：通过 `dsh_health` 的 `models.providers`（即 `dsh_health.models`）查看当前实例已接入的模型列表（源自叶子 profile 的实际生效配置(`$DSH_HOME/profiles/subagent/cordis.patch.yml` → `$DSH_HOME/cordis.patch.yml` → `settings.yaml.imported` → 旧位置 `settings.yaml`,按序合并)）。
 - 编辑策略文件：修改 `~/.dsh/subagent/config/model-policy.md`，调整默认模型或预设方案（`modelPolicy`），修改后即时生效。
 - 单次任务指定：在 `dsh_task` 中传入 `model`、`provider` 与 `reasoning_effort` 参数（如 `dsh_task(model: "gemini-3.7-flash", provider: "my-gateway", reasoning_effort: "high")`）或通过 CLI 执行 `dsh-subagent -m <模型 id>`。参数无效时将直接报错（`UNKNOWN_MODEL` / `NO_ADAPTER` / `UNSUPPORTED_REASONING_EFFORT`）。可通过调用 `dsh_setup(default_model: "…")` 或 `dsh_setup(preset: "本项目方案")` 修改默认配置。
 - 全局修改：在 DSH 桌面设置中修改默认模型。
@@ -832,15 +833,15 @@ CLI 命令行支持参数：`--expected-seconds <n>`、`--acceptance <text>`、`
 │   ├── dsh-subagent.mjs      CLI:任何 harness 都能 shell 调用
 │   └── dsh-subagent-mcp.mjs  MCP server 入口
 ├── test/
-│   ├── selftest.mjs          协议级端到端自检(102 项:含模型枚举规则、策略文件链接与预设、首次接入引导块、dsh_setup 落盘/拒绝路径、隔离 DSH_HOME 的 decoy、生命周期留痕)
+│   ├── selftest.mjs          协议级端到端自检(105 项:含模型枚举规则、策略文件链接与预设、首次接入引导块、dsh_setup 落盘/拒绝路径、隔离 DSH_HOME 的 decoy、生命周期留痕)
 │   ├── monitor-autostart-probe.mjs 监控窗口自动拉起自检(26 项,假 exe + 临时 DSH_HOME)
 │   ├── ledger-liveness-probe.mjs   台账残留记录自检(20 项,临时 DSH_HOME 造假台账)
 │   ├── e2e-harness.mjs       验收脚本:让每个 harness 自己委托一次并核对产物
 │   ├── concurrency-probe.mjs 并发(N 路同时委托)+ 取消验证
 │   ├── tasks-probe.mjs       只验任务层的小烟测
 │   ├── session-perm-probe.mjs 解开某个会话日志,打印它**实际生效**的权限事实
-│   ├── panel-selftest.mjs    悬浮卡片逻辑自检(离线 143 项)
-│   ├── observer-selftest.mjs GUI 观察器自检(49 项,含心跳+规则版本、残留记录收尾、pid 宽限期、token 折叠、吞吐窗口、只读转录、0.1.5 新日志名)
+│   ├── panel-selftest.mjs    悬浮卡片逻辑自检(离线 144 项)
+│   ├── observer-selftest.mjs GUI 观察器自检(50 项,含心跳+规则版本、残留记录收尾、pid 宽限期、token 折叠、吞吐窗口、只读转录、0.1.5 新日志名)
 │   ├── exec-surface-probe.mjs 执行面自检脚本(11 项:会话日志改名兼容 + 沙箱"空转成功"的判定与零误报)
 │   ├── live-audit.mjs        活跃审计:真在跑/残留记录/没记 pid/宿主状态/最近任务耗时(--fix 订正残留记录)
 │   ├── monitor-live-probe.mjs 真心跳 + 真 dsh_task:验 already-running 分支,并确认不重复拉起 GUI
@@ -882,9 +883,9 @@ CLI 命令行支持参数：`--expected-seconds <n>`、`--acceptance <text>`、`
 | 监控窗口自动启动（端到端链路） | 真实 MCP 服务调用 `dsh_task`（`HOST_CHECK=off`） | ✅ 结果返回 `monitor_host: launched(心跳缺失/过期)`，生成标记文件并在 `monitor-host.log` 记录 `reason=dsh_task <job_id>`，任务返回 `status: ok` |
 | 监控窗口自动启动（本地真实环境） | 默认配置运行 | ✅ 心跳文件不存在时检测到已有宿主进程 `guiHosts=[45148]`，状态标记为 `state=host-older-observer` 与 `gui-open-old-observer`，避免重复启动窗口 |
 | 任务台账状态修正 | `node test/ledger-liveness-probe.mjs` | ✅ 21/21 项测试通过：失效记录准确标记为 `status:lost` 与 `stale:true`；存活任务标记为 `running` 与 `pidAlive:true`；`killByCaller` 仅终止实际存活进程并将失效记录放入 `stale` 列表，重复执行返回 `notFound:true`；`killTreeSync` 对无效 PID 如实报告失败 |
-| 悬浮面板底部状态汇总 | `node test/panel-selftest.mjs`（143 项） | ✅ 格式为 `517/12.2K/517K/1.2M`；部分命中不四舍五入为 100%；支持宿主投影（`tokenUsage`）与观察器日志（`meta.usage`）两种数据源；速率依据观察器 `tokensPerSecond` 渲染，底部按 `tok/s \| 缓存命中 % \| 输入 N tok · 输出 M tok` 格式展示 |
+| 悬浮面板底部状态汇总 | `node test/panel-selftest.mjs`（144 项） | ✅ 格式为 `517/12.2K/517K/1.2M`；部分命中不四舍五入为 100%；支持宿主投影（`tokenUsage`）与观察器日志（`meta.usage`）两种数据源；速率依据观察器 `tokensPerSecond` 渲染，底部按 `tok/s \| 缓存命中 % \| 输入 N tok · 输出 M tok` 格式展示 |
 | 会话日志 Token 折叠 | `node test/usage-fold-probe.mjs --all` | ✅ 解析 1282 帧日志（36 次调用，`chunk.type=usage` 与 `data.usage` 各 36 次）：同轮次替换生效，计算结果为输入 92103、输出 50207、缓存读 1949440、命中率 95.5% |
-| 吞吐速率统计逻辑 | `node test/observer-selftest.mjs`（49 项） | ✅ `2 秒里跳 6000 token` 不产生速率，`跨 29 秒的 6000 token` 准确计算为约 207 tok/s；无输出增量时不显示速率；采样窗口取最近 4 次平均值，日志增长时投影输出 `tokensPerSecond` 且 `< 2000`；心跳携带 `usageRate` 字段 |
+| 吞吐速率统计逻辑 | `node test/observer-selftest.mjs`（50 项） | ✅ `2 秒里跳 6000 token` 不产生速率，`跨 29 秒的 6000 token` 准确计算为约 207 tok/s；无输出增量时不显示速率；采样窗口取最近 4 次平均值，日志增长时投影输出 `tokensPerSecond` 且 `< 2000`；心跳携带 `usageRate` 字段 |
 | 面板布局与交互测试 | `node test/panel-selftest.mjs` | ✅ 验证三处调节手柄（`data-axis=x,y,xy`）、光标样式（`cursor: ew-resize/ns-resize`）、自定义宽高变量（`--sap-w` / `--sap-h` 与 `width: var(--sap-w, 300px)`、`height: var(--sap-h, auto)`）、多列网格排列（`repeat(auto-fill, minmax(132px, 1fr))`）、内容滚动样式（`.sap-root[data-sized="true"] .sap-body { max-height: none }` 与 `.sap-root[data-sized="true"] .sap-body`）、头部折行样式（`flex-wrap: wrap` 与 `flex: none`、`white-space: nowrap`）及空状态居中样式（`justify-content: center` 与「无活跃子代理」文案） |
 | 启动图与 Bundle 缓存 | `node test/gui-graph-probe.mjs <临时实例 URL>` | ✅ 10/10 项通过：插件注入 `__DSH_BOOT__`，包含 `sap-grip`、`auto-fill`、`flex-wrap`、`自由缩放`、`无活跃子代理` 等新版代码（旧文案 `雷达静默` 与旧算法 `throughputOf` 为 false），响应头包含 `cache-control: public, max-age=31536000, immutable` |
 | 本地台账记录检查 | `dsh-subagent --list`（即 `CLI --list` 与 `--list` 参数） | ✅ 检查 134 条历史记录：所有条目均包含 `stale` / `pidAlive` / `derived` 标记，不存在异常运行中记录（已通过 `live-audit --fix` 将 5 条修正为 `lost`） |
@@ -908,7 +909,8 @@ CLI 命令行支持参数：`--expected-seconds <n>`、`--acceptance <text>`、`
 | 上游 LSP 插件问题影响分析 | 分析 `desktop` profile `--dump-config` 与宿主日志 | ✅ 确认桌面宿主不受影响（无 `lsp-stdio` 与 `tool-lsp`，无 `assertNever` 报错），提供 Web Profile 禁用配置 |
 | 标准错误输出静默验证 | 验证 Cursor `mcpprocess.log` | ✅ 正常启动路径下标准错误输出为 0 字节，消除无意义的连接告警；设置 `DSH_SUBAGENT_DEBUG=1` 时才输出版本横幅 |
 | 模型参数限制与校验收敛 | 执行 `npm run test:all` | ✅ 61/61 项全绿，验证工具描述与参数定义的一致性 |
-| 悬浮卡片显示实际生效模型 | `node test/observer-selftest.mjs`（49 项） + `node test/panel-selftest.mjs`（143 项） | ✅ 测试全绿（0 ❌）：投影优先读取 `meta.json` 中的实际生效模型，无记录时回退至 `task.json`；卡片列表行展示模型 chip，详情页展示服务商与推理强度，旧数据兼容显示为默认 |
-| 预览窗口只读显示子代理对话 | `node test/observer-selftest.mjs`（49 项） + `node test/panel-selftest.mjs`（143 项） | ✅ 测试全绿（0 ❌）：观察器与 Token 用量同一趟折叠会话日志，产出「用户 / 助手 / 调用 / 返回」四类转录（推理块不进预览，空返回标成 `(空返回)`），按 60 条与 6000 字封顶后随投影下发；预览窗只渲染 `role` 与 `text`，没有任何写入口，有转录时不再退回 `stderr.log` 尾部 |
-| 动态模型管理策略体系 | `npm run test:all`（10 个测试脚本，包含 `test:all` 组合调用） | ✅ **397 项**（`selftest.mjs` 包含 102 条断言）；模型列表动态从 `$DSH_HOME/settings.yaml` 解析，从 `llm-pi-ai.providers.<route>.models` 获取，策略文件 `config/model-policy.md` 支持用户自定义与预设方案（`modelPolicy.path` / `fileUrl` / `presets`），未配置时输出初始化引导，执行 `dsh_setup(default_model:)` 写入配置后引导自动关闭，非法参数准确返回 `isError:true` 拒绝处理，短任务正常返回 `status=ok` |
-| 面板不再常驻动画、不再每秒重渲染（0.1.11） | `node test/panel-selftest.mjs` + 本机 DSH Desktop GPU 进程采样（独立进程，每 5 秒一次） | ✅ **143/143 项全绿**（新增 5 条性能防回归断言：扫描光只准挂在 `data-busy="true"` 规则上、base 的 `.sap-card::after` 不含 `animation`、`@keyframes sap-sweep` 只动 `transform` 不含 `left:`、空闲时 `.sap-root` 为 `data-busy="false"`、心跳为「有任务 1000 / 空闲 30000」）。修前实测**空闲态**（无任何任务在跑）宿主 GPU 进程稳定 97%–118% 单核、renderer 仅 12%、Edge 全部进程 0%，证明瓶颈在合成/光栅而非 JS；成因是常驻无限动画 × 设置窗那层全视口 `backdrop-filter` 每帧重算。`npm run test:all` 397 项中 **396 项通过**，唯一未通过项是 `wait-policy-probe` 的 `dsh_task_status` 默认等待断言（该探针预算正好是默认值 30 秒，而当前默认模型 `claude-opus-5-5` 使叶子任务超时，与本改动无关，连跑两次同样命中） |
+| 悬浮卡片显示实际生效模型 | `node test/observer-selftest.mjs`（50 项） + `node test/panel-selftest.mjs`（144 项） | ✅ 测试全绿（0 ❌）：投影优先读取 `meta.json` 中的实际生效模型，无记录时回退至 `task.json`；卡片列表行展示模型 chip，详情页展示服务商与推理强度，旧数据兼容显示为默认 |
+| 预览窗口只读显示子代理对话 | `node test/observer-selftest.mjs`（50 项） + `node test/panel-selftest.mjs`（144 项） | ✅ 测试全绿（0 ❌）：观察器与 Token 用量同一趟折叠会话日志，产出「用户 / 助手 / 调用 / 返回」四类转录（推理块不进预览，空返回标成 `(空返回)`），按 60 条与 6000 字封顶后随投影下发；预览窗只渲染 `role` 与 `text`，没有任何写入口，有转录时不再退回 `stderr.log` 尾部 |
+| 动态模型管理策略体系 | `npm run test:all`（10 个测试脚本，包含 `test:all` 组合调用） | ✅ **402 项**（`selftest.mjs` 包含 105 条断言）；模型列表动态从叶子 profile 的实际生效配置解析（`$DSH_HOME/profiles/subagent/cordis.patch.yml` → `$DSH_HOME/cordis.patch.yml` → `settings.yaml.imported` → 旧位置 `settings.yaml`；流式 `models: [ … ]` 与块式 `models:` 下 `- id:` 两种写法都认，多份合并去重保序），策略文件 `config/model-policy.md` 支持用户自定义与预设方案（`modelPolicy.path` / `fileUrl` / `presets`），未配置时输出初始化引导，执行 `dsh_setup(default_model:)` 写入配置后引导自动关闭，非法参数准确返回 `isError:true` 拒绝处理，短任务正常返回 `status=ok` |
+| 面板不再常驻动画、不再每秒重渲染（0.1.11） | `node test/panel-selftest.mjs` + 本机 DSH Desktop GPU 进程采样（独立进程，每 5 秒一次） | ✅ **144/144 项全绿**（新增 5 条性能防回归断言：扫描光只准挂在 `data-busy="true"` 规则上、base 的 `.sap-card::after` 不含 `animation`、`@keyframes sap-sweep` 只动 `transform` 不含 `left:`、空闲时 `.sap-root` 为 `data-busy="false"`、心跳为「有任务 1000 / 空闲 30000」）。修前实测**空闲态**（无任何任务在跑）宿主 GPU 进程稳定 97%–118% 单核、renderer 仅 12%、Edge 全部进程 0%，证明瓶颈在合成/光栅而非 JS；成因是常驻无限动画 × 设置窗那层全视口 `backdrop-filter` 每帧重算。0.1.12 起 `npm run test:all` **402 项全绿**；此前唯一未通过的 `wait-policy-probe` 默认等待断言，根因是叶子 profile 拿不到默认模型导致任务超时，已随 0.1.12 的模型配置注入一并修好 |
+| 适配 DSH 2.0.15 / 内核 0.1.7-rc.2（0.1.12） | `npm run test:all` + `dsh --profile subagent --dump-config` 生效值 + 真机任务 | ✅ **402 项全绿**。①投影块补上 `kind`（新客户端按它分派，认不出就 `assertNever` 抛错、整块被丢弃 → 卡片空、⚡ 前缀消失）；②模型枚举改读 profile patch 层（0.1.7-rc.2 起 `settings.yaml` 被一次性导入后改名 `settings.yaml.imported`），流式与块式两种 YAML 写法都认，迁移前后都枚举得到；③`llm-pi-ai` 与 `agent-default-model` 由安装时从**本机自己的配置**注入叶子 profile（公开仓库不再带内网地址与密钥名），`--dump-config` 的生效值当场验证，不指定模型的 `dsh_task` 从必失败变为返回 `ok`（实测 19.0s 写完文件） |

@@ -1,6 +1,6 @@
 # 模型策略(桥接层自带的**用户可编辑**文件)
 
-默认模型: (未指定)
+默认模型: deepseek-v4.1-flash
 
 > 上面这一行是**机器可读**的:桥接层每次调用都会重新读它。
 > - 用 `dsh_setup(default_model: "<模型 id>")` 或 `dsh_setup(preset: "本项目方案")` 落盘;
@@ -35,7 +35,7 @@
 | **文档书写**(PRD / 文档 / 说明 / 报告 / README 这类成文产出) | `gemini-3.7-flash` | 成文产出更吃表达,换它写 |
 | **过于复杂**,或**强视觉**(要读截图、图像对齐、离开宿主对话上下文就无法判断) | **不派给 DSH** | 由主模型(调用方自己)亲自完成,别用子代理兜 |
 
-这两个模型都是本机 `$DSH_HOME/settings.yaml` 里**已接入**的模型(provider 名见 `dsh_health.models.providers` 的键);
+这两个模型都是本机 `dsh_health.models` 里**已接入**的模型(provider 名见 `models.providers` 的键);
 换机器/换实例后要先自己核对一遍,规则见下一节第 1 条。
 
 ## 模型选择规则
@@ -46,10 +46,12 @@
 **怎么挑:**
 
 1. **先看清有哪些模型,不要凭记忆猜 id。** `dsh_health` 的 `models.providers` 就是**这个 DSH 实例
-   已接入的模型清单**(权威来源 `$DSH_HOME/settings.yaml` 的
-   `llm-pi-ai.providers.<provider>.models[]` 与 `llm-deepseek.models`,按 provider 分组)。
-2. **默认**:省略 `dsh_task` 的 `model` 参数,就走 DSH 自己配置的默认模型(`settings.yaml` 的
-   `agent-default-model`)。本文件里的 `默认模型:` 是**调用方该用的规则** —— 也就是首次接入时
+   已接入的模型清单**(权威来源是叶子 profile 的**实际生效配置**:`$DSH_HOME/profiles/subagent/cordis.patch.yml`
+   → `$DSH_HOME/cordis.patch.yml` → `settings.yaml.imported` → 旧位置 `settings.yaml`;只认里面
+   `providers.<route>.models[]` 与 `llm-deepseek.models` 声明的 id,按 provider 分组)。
+2. **默认**:省略 `dsh_task` 的 `model` 参数,就走 DSH 自己配置的默认模型(生效配置里的
+   `agent-default-model`;DSH 0.1.7 起该条目是 **per-profile** 的,叶子 profile 那份由安装器从本机配置注入)。
+   本文件里的 `默认模型:` 是**调用方该用的规则** —— 也就是首次接入时
    请用户指定的那一个。
 3. **文档书写类**:按「本项目方案」换成写文档那个模型。
 4. **过于复杂 / 强视觉**:不派给 DSH,主模型自己做。

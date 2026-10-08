@@ -17,7 +17,7 @@ MCP 服务器名称统一为 **`dsh`**，各客户端中的工具命名格式如
 
 在未配置默认模型的情况下，首次调用 `dsh_health` 或 `dsh_task` 时，返回内容末尾将附加一段包含 6 行指引的**首次接入引导说明**。调用方 Agent 按以下流程执行初始化：
 
-1. **获取已接入模型列表**：读取 `dsh_health` 返回的 `models.providers`（按服务商分组）。模型权威来源为 `$DSH_HOME/settings.yaml` 中的 `models` 数组，请勿自行构造不存在的模型 ID。
+1. **获取已接入模型列表**：读取 `dsh_health` 返回的 `models.providers`（按服务商分组）。模型权威来源是叶子 profile 的**实际生效配置**（`$DSH_HOME/profiles/subagent/cordis.patch.yml` → `$DSH_HOME/cordis.patch.yml` → `settings.yaml.imported` → 旧位置 `settings.yaml`），请勿自行构造不存在的模型 ID。
 2. **确认默认模型选择**：由于 MCP 服务不直接与用户交互，需由调用方 Agent 将可用模型列表展示给用户并获取选择。
 3. **写入配置**：调用 `dsh_setup(default_model: "<模型 id>")`，或使用预设方案 `dsh_setup(preset: "本项目方案")`。若传入未接入的模型 ID，服务将直接报错并返回可用列表。
 4. **展示策略文件路径**：引导说明中包含 `fileUrl`（形如 `file:///…/config/model-policy.md`），用户可直接编辑该文件调整模型选择规则，修改后即时生效。

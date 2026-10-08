@@ -2,6 +2,68 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/);日期为本地实测日期。
 
+## [0.1.12] — 2026-10-08
+
+本版主题:**适配 DSH 2.0.15 / 内核 0.1.7-rc.2(与 npm 上的 0.2.0-rc.2 同一套契约)**。
+升级后设置由插件 Config schema 派生、配置变成 per-profile,桥接层有三处直接失效;同轮还把
+「本机 provider 配置」整段移出公开仓库。
+
+### 修复
+
+- **悬浮卡片在升级后整张空掉**(侧栏行首那个 ⚡ 同时消失):观察器下发的会话列表投影块少了
+  `kind` 字段,新客户端按它分派(`sequenced` / `cached`),认不出就走 `assertNever`
+  **抛错** —— 整块投影被丢掉,面板既拿不到 `dsh-subagent` 投影、标题里也没有 ⚡ 前缀,
+  于是 `entryOf()` 返回 null、卡片永远空。现在按新契约带 `kind: 'sequenced'`。
+  `observer-selftest` 新增一条断言钉死这点(去掉 `kind` 立刻红),契约依据是
+  0.2.0-rc.2 的 `SessionProjectionHints { kind: 'cached' | 'sequenced'; asOfSeq; values }`
+  与 `applyListBlock` 的 `assertNever(block.kind, "session list projection block kind")`。
+- **模型枚举读不到任何东西**:0.1.7-rc.2 起设置由插件 Config schema 派生,旧的
+  `$DSH_HOME/settings.yaml` 被一次性导入后改名成 `settings.yaml.imported`,而枚举只读那个
+  已经消失的文件 —— 后果是 `dsh_health.models` 报错、`dsh_setup` 拒绝校验与落盘默认模型,
+  `npm run test:all` 从 2026-09-29 起崩在自检第 31 项(`ENOENT … settings.yaml`)。
+  现在按**有序来源清单**读:`profiles/subagent/cordis.patch.yml` → `$DSH_HOME/cordis.patch.yml`
+  → `settings.yaml` → `settings.yaml.imported`,缺文件跳过;**流式 `models: [ … ]` 与
+  块式 `models:` 下 `- id:` 两种写法都认**,多份文件同一 route 取并集、去重、保序,
+  枚举不到时 `error` 点明实际搜过的路径。
+- **不指定模型的 `dsh_task` 一起来就失败**:迁移后配置变成 **per-profile**,叶子 profile
+  (`dsh --profile subagent`)既没有服务商条目、也没有默认模型 —— 报
+  `no adapter registered for provider …`,不指定模型时还会
+  `DeepSeek request extension preparation failed`(本机实测复现)。安装时改为从**本机自己的配置**
+  里抽出 `llm-pi-ai` 与 `agent-default-model` 两条,注入叶子 profile 的
+  `# >>> dsh-subagent-llm-providers >>>` 标记块,并用 `dsh --profile subagent --dump-config`
+  的**生效值**当场验证(配置写对了 ≠ 生效)。
+- **面板空闲态仍有常驻动画**:脉冲光环与空态雷达(2.8s 无限旋转的 `conic-gradient`)原本无条件
+  播放 —— 面板只要在屏幕上就每帧重绘,叠上宿主设置窗那层全视口 `backdrop-filter` 就是持续 GPU
+  占用。改成只有 `data-active="true"` 时才动,空态雷达改静止;`panel-selftest` 的防回归闸门扩到
+  「空闲时零常驻动画」。
+- **`install.mjs` 遇到标记块漂移不再静默删配置**:DSH 自己改写 profile patch 时会把结束标记重新挂到
+  文件尾,把用户自己的条目圈进受管块,此时照常重写会把它们整段删掉。现在检测到块内混入外来条目
+  就跳过重写并明确报出;`installObserver` 同时改用 begin 之后的**第一个** end(原来的 `lastIndexOf`
+  会跨过整段用户配置)。
+- **叶子闸门误报**:`workflow-worker-thread` 在 2.0.15 的配置树里已经不存在,旧判据把"配置树里查不到"
+  当成"仍然启用",于是每次 install 都报一条假 ❌。改成只有"存在且没被 `disabled`"才算漏。
+- **`leaf-only-probe` 不再依赖 PATH 里有 `dsh`**:改用桥接层自己的启动器解析(`lib/launcher.mjs`),
+  否则在没有 `dsh` 命令的 shell 里整个测试链会从这一段断掉,后面几段一起不跑。
+
+### 变更
+
+- **仓库不再携带本机 provider 配置**:`profile/cordis.patch.yml` 里那段 provider 配置(带着内网
+  网关地址与密钥环境变量名)整段移出仓库,改由安装时从本机自己的配置注入到
+  `$DSH_HOME/profiles/subagent/cordis.patch.yml`(仓库之外)。想手写自己的片段可放
+  `$DSH_HOME/llm-providers.patch.yml`,或用 `DSH_SUBAGENT_PROVIDERS_FILE` 显式指定。
+  这样公开仓库里保持敏感字样 0 命中,同时叶子照样解析得到服务商。
+
+### 校验
+
+- `npm run test:all`:10 个脚本 **402 项全绿**(launcher 13 / panel 144 / selftest 105 /
+  observer 50 / ledger 20 / autostart 26 / leaf 14 / exec-surface 11 / wait-policy 11 /
+  monitor-live 8)。其中 selftest 的真跑链路(dsh_task 写完文件、结果回传、轮询到终态)在本版
+  首次在迁移后的 DSH 上通过;模型枚举对真机报出 3 个 route、79 个模型。
+- 端到端:不指定模型的 `dsh-subagent` 调用(迁移后原本失败)现在返回 `OK`;
+  `install.mjs --only profile` 连跑两次,第二次 0 条动作(幂等),`--dump-config` 里
+  `llm-pi-ai` 与 `agent-default-model` 都在生效树里。
+- 仓库敏感词闸门:`git grep -nEi` 对加解密类字样仍为 **0 命中**。
+
 ## [0.1.11] — 2026-09-29
 
 ### 新增

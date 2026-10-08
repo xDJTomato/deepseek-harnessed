@@ -73,6 +73,11 @@ const checks = [
 	['added 带上了调用方投影(悬浮卡片据此分组)', added?.args[0]?.projections?.values?.['dsh-subagent'] !== undefined],
 	['投影水位是小自增计数(不会挡住宿主真实投影)', Number.isInteger(added?.args[0]?.projections?.asOfSeq)
 		&& added.args[0].projections.asOfSeq < 1000],
+	// 0.1.7-rc.2 起的客户端 `applyListBlock` 按 `kind` 分派,认不出的值走 default 抛
+	// assertNever —— 漏了这一个字段,整块投影(包括 `dsh-subagent`)一条都落不进客户端
+	// 仓库,悬浮卡片只剩空态(踩过:DSH 2.0.15 更新后卡片不显示已启动的 dsh_task)。
+	['投影块带合法 kind(客户端按它分派,漏了整块被丢弃)', added?.args[0]?.projections?.kind === 'sequenced'
+		|| added?.args[0]?.projections?.kind === 'cached'],
 	['标题带调用方前缀', String(added?.args[0]?.projections?.values?.title ?? '').startsWith('⚡ ')],
 	['运行中标题带「勿点开」提示(打开会写坏外部会话日志)',
 		String(added?.args[0]?.projections?.values?.title ?? '').includes('勿点开')],

@@ -208,6 +208,22 @@ check("CSS:运行中磁贴的流光动 transform,不动 left(left 每帧触发�
 check("源码:心跳空闲 30 秒、有任务才 1 秒(空闲时不每秒重渲染整张卡片)",
 	code.includes("useNow(runningRef.current > 0 ? 1000 : 30000)"));
 
+// 通用闸门:面板**空闲时零动画** —— 任何无限动画都必须挂在「确实有活动」的作用域里。
+// 这条闸门正好抓得住 2026-09-29 漏网的那两处常驻动画(头部脉冲光环、空态旋转雷达):
+// 前者无条件跑,后者恰好在「没有任务」时跑,正是「只要 DSH 显示就吃 GPU」的那部分。
+const GATE_SCOPES = ['[data-busy="true"]', '[data-tone="run"]', '[data-tone="err"]', '[data-active="true"]'];
+const ungatedAnims = [];
+let lastSelector = "";
+for (const raw of panelCss.split("\n")) {
+	const line = raw.trim();
+	if (line.endsWith("{")) { lastSelector = line; continue; }
+	if (!line.includes("animation:") || !line.includes("infinite")) continue;
+	if (lastSelector.startsWith("@media") || lastSelector.startsWith("@keyframes")) continue;
+	if (!GATE_SCOPES.some((scope) => lastSelector.includes(scope))) ungatedAnims.push(lastSelector || "(无选择器)");
+}
+check("CSS:空闲时零常驻动画(无限动画必须挂在有活动的作用域里)",
+	ungatedAnims.length === 0, ungatedAnims.join(" | "));
+
 // ------------------------------------------------------------------ 2. 席位注册
 
 let registered = null;

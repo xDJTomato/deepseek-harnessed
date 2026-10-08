@@ -825,6 +825,13 @@ function start(ctx) {
 					blank: false,
 					...(info.cwd === '' ? {} : { cwd: info.cwd }),
 					projections: {
+						// 块必须带 `kind`:0.1.7-rc.2 起的客户端在 `applyListBlock` 里按它
+						// switch('sequenced' | 'cached'),认不出的值走 default 抛 assertNever。
+						// 漏了这一个字段,整块投影(包括 `title` 的 ⚡ 前缀和 `dsh-subagent`)
+						// 一条都落不进客户端仓库,悬浮卡片于是拿不到任何任务 —— 踩过:DSH
+						// 2.0.15 更新后卡片只剩空态,侧栏那条也不再带 ⚡ 标题。宿主自己发的是
+						// `hintsOf('sequenced', …)`,我们模拟的是它的实时注册表,所以同款。
+						kind: 'sequenced',
 						asOfSeq: state.projectionSeq,
 						values: {
 							// 列表里的标题:一眼看出是哪个调用方的 subagent 任务。
