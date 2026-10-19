@@ -83,7 +83,7 @@ node test\selftest.mjs
 修改代码后可执行全部自检脚本：
 
 ```powershell
-npm run test:all                      # 上面 10 个自检脚本一次跑完(309 项)
+npm run test:all                      # 自检脚本一次跑完(离线探针 + 真机自检)
 ```
 
 也可以按模块单独运行对应的自检脚本：

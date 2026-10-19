@@ -27,7 +27,8 @@
 | --- | --- | --- |
 | `DSH_SUBAGENT_WORKSPACE` | 调用方工作区 → server cwd | 未在参数中显式指定 `workspace` 时使用的默认目录 |
 | `DSH_SUBAGENT_DSH_SHIM` | 自动解析 | 显式指定 `dsh` 启动脚本（`dsh.cmd`）的绝对路径，用于自动解析失败时的路径指定 |
-| `DSH_SUBAGENT_PERMISSION` | `danger-full-access` | 子代理默认权限等级，可选值：`read-only` / `workspace-write` / `danger-full-access`（支持通过 `/` 分隔选项）。该值决定沙箱模式与权限预设 |
+| `DSH_SUBAGENT_PERMISSION` | `workspace-write` | 子代理默认权限等级，可选值：`read-only` / `workspace-write` / `danger-full-access`（支持通过 `/` 分隔选项）。该值决定沙箱模式与权限预设；`workspace-write` 允许读写目标工作空间，工作空间之外由沙箱拒绝 |
+| `DSH_SUBAGENT_TOOLS_MODE` | `ptc` | 叶子进程的工具呈现形态：`ptc`（程序化工具调用，模型经 `run_code` 调度工具）或 `native`（每个工具一个原生 schema）。起进程时写成 `DSH_TOOLS_MODE` 交给 DSH 的 `tools` 行 |
 | `DSH_PERMISSION_MODE` | — | `DSH_SUBAGENT_PERMISSION` 的兼容别名 |
 | `DSH_SUBAGENT_DEBUG` | — | 设置为 `1` 时输出桥接层内部调试日志至标准错误 |
 
@@ -59,16 +60,26 @@
 | `DSH_SUBAGENT_MONITOR_CMD` | — | 自定义需要拉起的可执行文件路径 |
 | `DSH_SUBAGENT_MONITOR_ARGS` | — | 启动可执行文件时追加的参数列表（JSON 数组或以空格分隔的字符串） |
 | `DSH_SUBAGENT_HOST_PROBE_TIMEOUT_MS` | `15000` | 宿主进程查询（`Get-CimInstance`）单次超时时间，失败时会自动重试一次 |
+| `DSH_SUBAGENT_CATALOGUE` | 开启 | 设为 `off` 时关闭原生模型目录探针，只走 YAML 兜底（自检夹具用它保持确定性） |
+| `DSH_SUBAGENT_CATALOGUE_TTL_MS` | `60000` | 原生模型目录的复用窗口（毫秒）；轮次内模型不会变，缓存住就不必每次探测都起一个 DSH 进程 |
+| `DSH_SUBAGENT_CATALOGUE_CMD` | — | 用一个脚本顶掉真实探针（自检/诊断用）；设置后不会再起 DSH |
 
 ### 1.5 模型策略配置
 
-可用模型列表由 DSH 实例自身提供（按序读 `$DSH_HOME/profiles/subagent/cordis.patch.yml` → `$DSH_HOME/cordis.patch.yml` → `settings.yaml.imported` → 旧位置 `settings.yaml`，取其中 `providers.<route>.models[]` 与 `llm-deepseek.models` 声明的 ID），桥接层不硬编码模型标识。模型选择规则保存在用户可编辑的策略文件中，每次任务分派时实时读取。
+**模型清单的来源（原生优先）。** DSH 0.2.0-rc.2 起，实例自己就能回答"这一刻登记了哪些 provider、每个 provider 的 catalog 是什么"（`llm.listProviders()` / `llm.listModels()`）。桥接层因此不再靠手写解析配置文件去猜：
+
+1. **原生探针**：`dsh --profile subagent --print-model-catalogue` —— 叶子 profile 里的 `subagent-models.js` 只读登记表、不建会话、不发模型调用，打印一行 JSON（`dsh_health` 的 `models.source` 为 `native`）；
+2. **磁盘缓存**：探针结果写到 `$DSH_HOME/subagent/state/model-catalogue.json`（`DSH_SUBAGENT_CATALOGUE_TTL_MS` 内复用，跨 MCP 进程）；探针暂时起不来时用它，并把 `models.stale` 标出来（`source` 为 `cache`）；
+3. **YAML 兜底**：探针不可用且没有缓存时，才按序读 `$DSH_HOME/profiles/subagent/cordis.patch.yml` → `$DSH_HOME/cordis.patch.yml` → `settings.yaml` → `settings.yaml.imported`，取其中 `providers.<route>.models[]` 与 `llm-deepseek.models` 声明的 ID（`source` 为 `yaml`，探针失败原因单列在 `modelCatalogueError`）。
+
+无论走哪条路，`dsh_health` 的 `models.providers` 都按 provider 分组返回；`models.source` 说明这一次用的是哪一层。
 
 | 配置项 | 说明与路径 |
 | --- | --- |
 | `DSH_SUBAGENT_POLICY` | 覆盖策略文件路径；默认路径为 `<桥接层根>/config/model-policy.md`（即 `~/.dsh/subagent/config/model-policy.md`） |
-| 解析规则 | 程序解析第一行 `默认模型: <模型 id>`，以及各 `### <预设名>` 分组下的 `预设默认模型: <模型 id>` 行，其余正文为说明文本 |
+| 解析规则 | 程序解析第一行 `默认模型: <模型 id>`、第一行 `默认推理强度: <档位>`，以及各 `### <预设名>` 分组下的 `预设默认模型: <模型 id>` 行，其余正文为说明文本。`默认推理强度:` 只在用到策略默认模型时生效；写 `(未指定)` 表示交回 DSH 设置里的档位 |
 | 未配置状态 | 策略文件中声明为 `默认模型: (未指定)` 时，`dsh_task` 与 `dsh_health` 返回引导说明（不超过 10 行） |
+| 发布默认值 | `默认模型: deepseek-flash` + `默认推理强度: max`。裸模型 id 若在多条 provider 路由下都有登记，叶子进程按 `resolveModelInfo` 声明的 `reasoningEfforts` 选路（优先 DSH 默认那条），并对余额/凭据/档位这类路由级失败自动换下一条；写 `provider/model` 时钉死 provider |
 | 已注册模型列表 | 通过 `dsh_health` 的 `models.providers` 按服务商分组返回（仅解析 `llm-pi-ai.providers.<route>.models` 与 `llm-deepseek.models` 数组；解析失败时在 `models.error` 记录原因） |
 | 访问路径与协议链接 | 通过 `dsh_health` 返回 `modelPolicy.path` 与 `fileUrl`（`file:///…` 格式） |
 
@@ -86,16 +97,19 @@
 
 ## 2. DSH `subagent` profile 结构
 
-Profile 配置文件位于 `profile/cordis.patch.yml`（安装后部署至 `$DSH_HOME/profiles/subagent/`），包含七项针对无人值守模式的插件调整：
+Profile 配置文件位于 `profile/cordis.patch.yml`（安装后部署至 `$DSH_HOME/profiles/subagent/`），包含八项针对无人值守模式的插件调整：
 
 | 序号 | 调整内容 | 技术原因 |
 | --- | --- | --- |
-| 1–2 | 停用 `headless-startup` 与 `headless-runner`，替换为 `subagent-startup.js` 与 `subagent-runner.js` | 官方 headless 模式仅支持命令行参数；子代理需要支持 `--prompt-file`、`--result-file`、`--metadata-file`、`--model`、`--reasoning-effort`，并输出结构化结果与运行元数据 |
+| 1–2 | 停用 `headless-startup` 与 `headless-runner`，替换为 `subagent-startup.js`、`subagent-runner.js` 与 `subagent-models.js` | 官方 headless 模式仅支持命令行参数；子代理需要支持 `--prompt-file`、`--result-file`、`--metadata-file`、`--model`、`--reasoning-effort`，并输出结构化结果与运行元数据；`--print-model-catalogue` 这个"只枚举、不推理"的模式供桥接层读取原生模型登记表（见 §1.5）；0.2.1 起 `subagent-models.js` 还要先 `await loader` 再列 provider，否则登记表为空 |
 | 3 | 停用 `session-title-llm` | 无人值守任务无需生成会话标题，减少一次模型调用与耗时 |
 | 4 | 设置 `approval.policy: never` | 子代理为非交互式后台进程，无人工确认交互界面 |
-| 5 | `sandbox-policy.mode` 由 `DSH_SUBAGENT_PERMISSION` 决定 | 外部工具调用默认拥有操作权限；需要限制时可设置为 `read-only` 或 `workspace-write` |
+| 5 | `sandbox-policy.mode` 与 `permission.defaultPreset` 由 `DSH_SUBAGENT_PERMISSION` 决定（默认 `workspace-write`） | 子代理默认只动目标工作空间；需要全盘时显式 `danger-full-access` |
 | 6 | 显式配置无人值守权限预设表 | 避免预设不匹配导致启动失败，详见下文分析 |
-| 7 | 停用所有子代理递归分派工具 | 施加叶子节点执行限制，详见 §2.2 |
+| 7 | 重新启用 `credentials` 行 | DSH 0.2.1 起 provider 的 `apiKeyEnv` 先经凭据服务解析；headless 组合默认关掉该行，叶子会读不到 `$DSH_HOME/.credentials.yaml` 里的密钥 |
+| 8 | 停用所有子代理递归分派工具 | 施加叶子节点执行限制，详见 §2.2 |
+
+工具呈现形态（PTC）不写在 profile patch 里：`tools` 行的 `mode` 由 headless 组合接成 `process.env.DSH_TOOLS_MODE`，桥接层起叶子进程时设 `DSH_TOOLS_MODE=ptc`（`DSH_SUBAGENT_TOOLS_MODE=native` 可改回原生调用）。之所以不在 profile 里覆盖 `tools` 行：profile patch 改该行的 `config` 会撞上「its declared dsh requirements cannot be validated」的版本校验崩溃（实测整棵树起不来）；`tool-presentation` 行则声明的是**预设**挂载作用域，叶子不经过预设注册表，挂上去等于没声明（实测模型仍拿到原生 schema）。
 
 `sandbox-policy` 中的 `workspaceRoot` 设为 `process.cwd()`，子代理的工作目录与其启动时的工作空间路径严格一致。
 
@@ -107,15 +121,17 @@ Profile 配置文件位于 `profile/cordis.patch.yml`（安装后部署至 `$DSH
 composed sandbox and approval defaults match no preset
 ```
 
-该异常导致插件加载中断，子进程在初始化阶段以退出码 1 异常终止。测试表明使用 `--permission workspace-write` `必崩)。原因是` `dsh-base` `自带的预设表把` `workspace-write` 与 `read-only` 默认配置为 `approval: ask`，而子代理 profile 将审批策略固定为 `never`：
+该异常导致插件加载中断，子进程在初始化阶段以退出码 1 异常终止（0.1.x 实测：`--permission workspace-write` 必崩）。原因是 `dsh-base` 自带的预设表把 `workspace-write` 与 `read-only` 默认配置为 `approval: ask`，而子代理 profile 将审批策略固定为 `never`：
 
-| 组合模式 | 内置预设表匹配状态 | 执行结果 |
+| 组合模式 | 内置预设表匹配状态 | 未修补时的结果 |
 | --- | --- | --- |
 | `danger-full-access` + `never` | 成功匹配 | 正常运行 |
 | `workspace-write` + `never` | 无匹配项 | 启动失败 |
 | `read-only` + `never` | 无匹配项 | 启动失败 |
 
 因此 profile 显式定义完整预设表，为三种模式均配置 `approval: never`，并使 `defaultPreset` 与 `sandbox-policy.mode` 共享同一环境变量。超出权限的操作由沙箱直接拒绝，不进行挂起等待。
+
+0.2.1 实测：`workspace-write`（现为默认值）下任务正常完成，`pwsh` 可执行（`Write-Output SPAWN-PING` → `"SPAWN-PING\r\n"`、退出码 0、`denied=false`）。
 
 ### 2.2 叶子限制：禁止外部任务派发子任务
 

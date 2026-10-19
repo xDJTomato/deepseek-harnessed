@@ -16,6 +16,7 @@ import { readFileSync } from 'node:fs';
 import process from 'node:process';
 import { startTask, resolveWorkspace, listTasks, PERMISSIONS, DEFAULT_TIMEOUT_SECONDS, DEADLINE_GRACE } from '../lib/tasks.mjs';
 import { resolveLauncher } from '../lib/launcher.mjs';
+import { nativeCatalogue, resolveDefaultSelection } from '../lib/model-catalogue.mjs';
 import { dshHome } from '../lib/util.mjs';
 
 /** CLI 未显式给 --expected-seconds 时的默认预估:取外层上限的一半。 */
@@ -29,9 +30,9 @@ const USAGE = `dsh-subagent —— 在指定工作空间里跑一轮 DSH 任务�
 选项:
   -w, --workspace <dir>        目标工作空间(默认当前目录)
   -f, --prompt-file <path>     从文件读取提示词(推荐,不受命令行长度限制)
-  -m, --model <id>             本次调用的模型(默认沿用 DSH 设置)
-  -p, --provider <id>          模型提供方(默认沿用 DSH 设置)
-      --permission <mode>      ${PERMISSIONS.join(' | ')}(默认 danger-full-access)
+  -m, --model <id>             本次调用的模型(不传时先用策略文件里的「默认模型:」,再退回 DSH 设置)
+  -p, --provider <id>          模型提供方(不传时按模型的 provider 解析)
+      --permission <mode>      ${PERMISSIONS.join(' | ')}(默认 workspace-write)
   -e, --expected-seconds <n>   预估耗时(正整数,默认 ${CLI_DEFAULT_EXPECTED_SECONDS});超时 ×${DEADLINE_GRACE} 即硬截止
       --acceptance <text>      验收标准(一句可判定的话,随任务落盘并回显)
       --caller <name>          记录调用方身份(默认 cli)
@@ -135,18 +136,28 @@ async function main() {
 	const expectedSeconds = Number.isInteger(options.expectedSeconds) && options.expectedSeconds > 0
 		? options.expectedSeconds
 		: CLI_DEFAULT_EXPECTED_SECONDS;
+	// 没点名模型时用策略文件里的 `默认模型:`/`默认推理强度:` —— 与 MCP 侧 dsh_task 同口径
+	// (否则同一台机器上两个入口的"默认"不一样)。只在真需要时起探针:显式给了 -m 就完全不走这条路。
+	const catalogue = options.model === undefined ? nativeCatalogue() : null;
+	const decided = catalogue === null && options.model === undefined
+		? { selection: {}, from: 'native' }
+		: options.model === undefined
+			? resolveDefaultSelection({ provider: options.provider }, { providers: catalogue.providers })
+			: { selection: { model: options.model, provider: options.provider }, from: 'caller' };
 	const started = await startTask({
 		prompt: options.raw ? prompt : `${preamble(workspace)}${prompt}`,
 		workspace,
 		permission: options.permission,
-		model: options.model,
-		provider: options.provider,
+		model: decided.selection.model,
+		provider: decided.selection.provider,
+		reasoningEffort: decided.selection.reasoningEffort,
 		timeoutSeconds: options.timeout,
 		expectedSeconds,
 		acceptance: options.acceptance,
 		caller: options.caller ?? 'cli',
 		label: options.label,
 	});
+	process.stderr.write(`dsh-subagent: 模型来源 ${decided.from}\n`);
 	process.stderr.write(`dsh-subagent: job ${started.id} → workspace ${workspace}(实时目录 ${started.dir})\n`);
 	process.stderr.write(`dsh-subagent: caller=${started.record.caller} expected_seconds=${expectedSeconds} deadline=${started.record.deadlineAt}\n`);
 

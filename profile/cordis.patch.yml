@@ -7,18 +7,26 @@
 #       [--result-file <结果文件>] [--metadata-file <元数据 JSON>] \
 #       [--provider <id>] [--model <id>]
 #
+#   dsh --profile subagent --print-model-catalogue
+#       ↑ 只枚举 DSH 原生模型登记表并打印一行 JSON(不发模型调用、不建会话),
+#         桥接层的 dsh_health / dsh_setup 用它作为模型清单的**权威来源**。
+#
 # cwd = 目标工作空间;stdout 只输出最终答复;退出码 0 = 正常完成。
 # 会话按 DSH 常规持久化到 $DSH_HOME/sessions/<工作空间>/session-<uuid>/,
 # 因此这些子代理会话可以直接在 DSH GUI 里复查。
 #
-# 基线是 @deepseek-ai/dsh-headless(一次性 runner)。本层只做五件事:
+# 基线是 @deepseek-ai/dsh-headless(一次性 runner)。本层只做六件事:
 #   1. 换掉只认 argv 的 headless-startup,改成支持 --prompt-file / --result-file /
 #      --metadata-file / --model 的解析器;
 #   2. 换掉 headless-runner,改成能写结果文件与元数据、能单次指定模型的 runner;
 #   3. 关掉 LLM 起标题(无人查看标题,白花一次模型调用和时延);
 #   4. 审批策略固定为 never —— 子代理是非交互进程,没有人能点「同意」;
-#   5. 沙箱模式由 DSH_SUBAGENT_PERMISSION 决定,默认 danger-full-access
-#      (调用方本来就是有写权限的 harness;可用 read-only / workspace-write 收紧)。
+#   5. 沙箱模式由 DSH_SUBAGENT_PERMISSION 决定,默认 workspace-write
+#      (工作区可读写;要全盘读写可显式给 danger-full-access,要更紧可 read-only)。
+#   6. 工具呈现方式固定为 PTC(程序化工具调用):模型写一段 TypeScript,经 `run_code`
+#      调度工具,而不是一次一个原生工具调用。选择点由 `DSH_TOOLS_MODE=ptc` 在起叶子进程时
+#      给出(headless 的 `tools` 行读这个变量),运行时行 `ptc-runtime` 由 base 组合提供
+#      (为什么不写进本文件、为什么不覆盖 `tools` 行,见第 7 条注释)。
 
 # 1 + 2. 用本 profile 自己的启动解析器与 runner 取代 headless 的同名 row。
 - id: headless-startup
@@ -36,10 +44,17 @@
   config:
     policy: never
 
+# 4.5. DSH 0.2.1 起 provider 的 `apiKeyEnv` 不再只读进程环境变量,而是先问 credentials 服务;
+#      headless 组合把这一行关掉了,叶子进程于是读不到 `$DSH_HOME/.credentials.yaml` 里的 key,
+#      第一次模型调用就以 MISSING_CREDENTIAL 失败(实测:0.2.1-rc.2 下所有 pi-ai 路由都如此)。
+#      重新启用:该行读的是本机凭据文件,不向下游泄露任何明文。
+- id: credentials
+  disabled: false
+
 # 5. 沙箱:整块 config 是浅覆盖,必须同时给出 mode 与 workspaceRoot。
 - id: sandbox-policy
   config:
-    mode: !!js process.env.DSH_SUBAGENT_PERMISSION ?? process.env.DSH_PERMISSION_MODE ?? 'danger-full-access'
+    mode: !!js process.env.DSH_SUBAGENT_PERMISSION ?? process.env.DSH_PERMISSION_MODE ?? 'workspace-write'
     workspaceRoot: !!js process.cwd()
 
 # 6. 权限预设:必须与上面的 (沙箱模式, 审批策略) 组合**逐字对齐**,否则
@@ -49,8 +64,8 @@
 #
 #    原因是 dsh-base 自带的预设表把 workspace-write / read-only 配成 approval: ask,
 #    而本 profile 第 4 条把审批固定成 never:
-#        danger-full-access + never → 命中自带表 ✔(所以默认档一直能跑)
-#        workspace-write   + never → 无表项 ✘ → 崩
+#        danger-full-access + never → 命中自带表 ✔
+#        workspace-write   + never → 无表项 ✘ → 崩(默认档就是这一档,所以这张表是必需的)
 #        read-only         + never → 无表项 ✘ → 崩
 #
 #    这里显式声明一张「无人值守」预设表:三种沙箱模式都配 approval: never。
@@ -58,7 +73,7 @@
 #    defaultPreset 跟沙箱模式取同一个环境变量,保证两者永远一致。
 - id: permission
   config:
-    defaultPreset: !!js process.env.DSH_SUBAGENT_PERMISSION ?? 'danger-full-access'
+    defaultPreset: !!js process.env.DSH_SUBAGENT_PERMISSION ?? 'workspace-write'
     presets:
       read-only:
         sandbox: read-only
@@ -122,7 +137,6 @@
 - insert:
     - id: subagent-startup
       name: './subagent-startup.js'
-
     - id: subagent-runner
       name: './subagent-runner.js'
       inject: [subagentStartup]
@@ -133,6 +147,29 @@
         provider: !!js ctx.subagentStartup.provider
         model: !!js ctx.subagentStartup.model
         reasoningEffort: !!js ctx.subagentStartup.reasoningEffort
+        printCatalogue: !!js ctx.subagentStartup.printCatalogue
+
+    # 只枚举、不推理:`--print-model-catalogue` 时把 DSH 原生模型登记表打给桥接层。
+    # 桥接层(MCP/CLI)在 DSH 外面,以前靠自己手写解析 profile patch 与 settings.yaml 猜
+    # "这个实例有哪些模型";现在直接问登记表,猜的那一段只作为探针不可用时的兜底。
+    - id: subagent-models
+      name: './subagent-models.js'
+      inject: [subagentStartup]
+      config:
+        printCatalogue: !!js ctx.subagentStartup.printCatalogue
+
+    # 7. 工具呈现方式:PTC(程序化工具调用)。DSH 0.2.1 里这条选择在 `dsh-tools` 那一行上
+    #    (`config.mode: native | ptc`),`tool-presentation` 行只是**预设**用来覆盖它的手段:
+    #    `presentAs()` 声明的是"预设常驻挂载作用域",只覆盖加入该预设的 agent。叶子 profile
+    #    不经过预设注册表(headless 直接 `agents.create`),把 `tool-presentation` 挂在组合层
+    #    等于没声明 —— 实测:该行在场时模型仍拿到全部原生 schema、工具清单里没有 `run_code`。
+    #    也不能在这里覆盖 `tools` 行:profile patch 用 `- id: tools` 改它的 config,会撞上
+    #    "its declared dsh requirements cannot be validated" 的校验崩溃(实测),整棵插件树起不来。
+    #    所以改用 headless 自己留的那个开关:它在挂载时读 `process.env.DSH_TOOLS_MODE`
+    #    (未设即 native)。由 lib/tasks.mjs 起叶子进程时设成 `ptc`;单独跑 `--profile subagent`
+    #    时手动 export 同名变量即可拿到同样的形态。
+    #    `ptc` 需要宿主平面的 `ptcRuntime`(base 已组合 `ptc-runtime` + TypeScript SDK 渲染器),
+    #    缺了会在组装提示词时直接拒绝。
 
 # 8. LLM 服务商与默认模型 —— 本机私有,不进公开仓库
 #    叶子进程(`dsh --profile subagent`)必须能解析到服务商,否则 dsh_task 一起来就报

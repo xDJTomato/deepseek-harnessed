@@ -56,6 +56,7 @@ export const Config = z.object({
 	provider: z.string(),
 	model: z.string(),
 	reasoningEffort: z.string(),
+	printCatalogue: z.boolean(),
 });
 
 /** runner 写入的进程流;测试可替换。 */
@@ -213,7 +214,7 @@ function fail(io, error) {
  * 调用方要求的权限档位(与 permission-presets 的表项同名)。
  * 桥接层用 `DSH_SUBAGENT_PERMISSION` 传进来。
  */
-const REQUESTED_PERMISSION = process.env.DSH_SUBAGENT_PERMISSION ?? process.env.DSH_PERMISSION_MODE ?? 'danger-full-access';
+const REQUESTED_PERMISSION = process.env.DSH_SUBAGENT_PERMISSION ?? process.env.DSH_PERMISSION_MODE ?? 'workspace-write';
 
 /**
  * 把调用方要求的权限档位**钉进这一次会话**。
@@ -289,29 +290,116 @@ function eventsOf(session) {
 }
 
 /**
- * 用全新 Agent 跑一轮任务并把结果交付给调用方。
- * @param ctx - 携带 agents / agentDefaultModel / sessions 的插件上下文。
- * @param config - 已校验的 row 配置。
- * @param io - 面向进程的副作用。
+ * 排出**候选路由**:同一个模型 id 可能在多条 provider 下登记,但各自声明的
+ * `reasoningEfforts` 与可用状态不同 —— 实测 0.2.1 的本机:同一个模型 id 在一条聚合路由下声明了
+ * `max`,在另外两条下只到 `high`;而官方路由也声明 `max` 却没有余额。
+ *
+ * 所以分两段:先列**声明了该档位**的 provider(用原生元数据 `resolveModelInfo` 的
+ * `reasoning.efforts` 核),再补上其余登记了该模型、但没声明该档位的 provider ——
+ * 后者只在前面全部路由级失败时才会被尝试(见 shouldTryNext)。
+ * 优先沿用 DSH 当前默认选择里的 provider(用户自己在 GUI 里选的那条),再按注册顺序。
+ *
+ * @param ctx - 携带 llm 服务的插件上下文。
+ * @param model - 要用的模型 id。
+ * @param effort - 要求的推理档位(可为 null:不校验档位)。
+ * @param preferred - DSH 默认选择里的 provider(可为 undefined)。
+ * @returns 有序的 provider id 列表(可能为空:那就交回 DSH 默认 provider)。
  */
-async function run(ctx, config, io) {
-	await ctx.get('loader')?.await();
-	const agents = ctx.get('agents');
-	const defaultModel = ctx.get('agentDefaultModel');
-	const sessions = ctx.get('sessions');
-	if (agents === undefined || defaultModel === undefined || sessions === undefined) {
-		throw new Error('subagent-runner: agents / agentDefaultModel / sessions 未就绪');
+async function providerCandidates(ctx, model, effort, preferred) {
+	const llm = ctx.get('llm');
+	if (llm === undefined) return [];
+	const supported = [];
+	const rest = [];
+	for (const provider of llm.listProviders()) {
+		const id = typeof provider?.id === 'string' ? provider.id : '';
+		if (id === '') continue;
+		try {
+			const models = await llm.listModels(id);
+			if (!Array.isArray(models) || !models.some((entry) => entry?.id === model)) continue;
+		} catch {
+			// 该 provider 的 catalog 取不到 ≠ 没有这个模型:跳过,但不算命中。
+			continue;
+		}
+		let declares = false;
+		if (effort !== null) {
+			try {
+				const info = await llm.resolveModelInfo(id, model);
+				const efforts = info?.reasoning?.efforts;
+				declares = Array.isArray(efforts) && efforts.some((entry) => entry?.id === effort);
+			} catch {
+				// 元数据解析失败:当作"没声明",排到备用段。
+			}
+		}
+		(effort === null || declares ? supported : rest).push(id);
 	}
+	const order = (ids) => (typeof preferred === 'string' && ids.includes(preferred)
+		? [preferred, ...ids.filter((id) => id !== preferred)]
+		: ids);
+	return [...order(supported), ...order(rest)];
+}
 
-	const base = defaultModel.currentSelection();
-	const selection = {
-		provider: typeof config.provider === 'string' && config.provider !== '' ? config.provider : base.provider,
-		model: typeof config.model === 'string' && config.model !== '' ? config.model : base.model,
-		...(typeof config.reasoningEffort === 'string' && config.reasoningEffort !== ''
-			? { reasoningEffort: config.reasoningEffort }
-			: base.reasoningEffort === undefined ? {} : { reasoningEffort: base.reasoningEffort }),
-	};
+/**
+ * 把候选路由摊成"每次尝试用的模型选择"。
+ * 调用方点名了 provider → 只试那一条;点名了模型 → 按候选顺序;什么都没点 → DSH 默认。
+ * @param base - DSH 当前默认选择。
+ * @param model - 调用方点名的模型(可为 null)。
+ * @param provider - 调用方点名的 provider(可为 null)。
+ * @param effort - 推理档位(可为 null)。
+ * @param candidates - providerCandidates 的结果。
+ * @returns 有序的选择列表(至少一条)。
+ */
+function planAttempts(base, model, provider, effort, candidates) {
+	const selectedModel = model ?? base.model;
+	const selectionFor = (route) => ({
+		provider: route,
+		model: selectedModel,
+		...(effort === null ? {} : { reasoningEffort: effort }),
+	});
+	if (provider !== null) return [selectionFor(provider)];
+	if (model === null || candidates.length === 0) return [selectionFor(base.provider)];
+	return candidates.map(selectionFor);
+}
 
+/** 可以换路由重试的错误码:它们都发生在第一个模型请求上,还没有任何工具执行。 */
+const ROUTE_LEVEL_ERRORS = new Set([
+	'QUOTA',
+	'ACCOUNT_QUOTA_EXCEEDED',
+	'MISSING_CREDENTIAL',
+	'INVALID_CREDENTIAL',
+	'UNSUPPORTED_REASONING_EFFORT',
+	'UNKNOWN_MODEL',
+]);
+
+/**
+ * 这条路失败后还要不要试下一条。
+ *
+ * 只换**路由级**失败:余额、凭据、档位、未知模型。这类错误发生在第一个模型请求上
+ * (还没有任何工具执行),换一条路由重跑没有副作用;工具/沙箱类失败、模型真正开跑后
+ * 的失败一律不重试,避免把"任务做坏了"伪装成"换个路由就好了"。
+ * @param attempt - runAttempt 的结果。
+ * @returns 是否换下一条。
+ */
+function shouldTryNext(attempt) {
+	const code = attempt.reason === null ? null : attempt.reason.error?.code ?? null;
+	if (code === null || !ROUTE_LEVEL_ERRORS.has(code)) return false;
+	return attempt.outcome.text === '';
+}
+
+/**
+ * 用一份模型选择跑一轮(全新会话),不写结果文件、不退出 —— 收尾交给调用方,
+ * 这样"换下一条路由"时不会把中间那条的失败当成最终结果落盘。
+ * @param ctx - 插件上下文。
+ * @param config - 已校验的 row 配置。
+ * @param io - 进程副作用。
+ * @param selection - 本次尝试的 provider/model/reasoningEffort。
+ * @returns {{selection:object,sessionId:string,outcome:object,reason:object|null,startedAt:number}}
+ */
+async function runAttempt(ctx, config, io, selection) {
+	const agents = ctx.get('agents');
+	const sessions = ctx.get('sessions');
+	if (agents === undefined || sessions === undefined) {
+		throw new Error('subagent-runner: agents / sessions 未就绪');
+	}
 	const startedAt = Date.now();
 	const { agent } = await agents.create({
 		sessionId: SessionId(`session-${randomUUID()}`),
@@ -357,9 +445,55 @@ async function run(ctx, config, io) {
 
 	await sessions.flush(agent.session);
 	const outcome = summarize(eventsOf(agent.session), firstSeq);
-	const reason = describeReason(outcome.reason);
-	const metadata = {
+	return {
+		selection,
 		sessionId: String(agent.session.id),
+		outcome,
+		reason: describeReason(outcome.reason),
+		startedAt,
+	};
+}
+
+
+/**
+ * 用全新 Agent 跑一轮任务并把结果交付给调用方。
+ * @param ctx - 携带 agents / agentDefaultModel / sessions 的插件上下文。
+ * @param config - 已校验的 row 配置。
+ * @param io - 面向进程的副作用。
+ */
+async function run(ctx, config, io) {
+	await ctx.get('loader')?.await();
+	const agents = ctx.get('agents');
+	const defaultModel = ctx.get('agentDefaultModel');
+	const sessions = ctx.get('sessions');
+	if (agents === undefined || defaultModel === undefined || sessions === undefined) {
+		throw new Error('subagent-runner: agents / agentDefaultModel / sessions 未就绪');
+	}
+
+	const base = defaultModel.currentSelection();
+	const configuredModel = typeof config.model === 'string' && config.model !== '' ? config.model : null;
+	const configuredProvider = typeof config.provider === 'string' && config.provider !== '' ? config.provider : null;
+	const configuredEffort = typeof config.reasoningEffort === 'string' && config.reasoningEffort !== '' ? config.reasoningEffort : null;
+	const reasoningEffort = configuredEffort ?? (base.reasoningEffort === undefined ? null : String(base.reasoningEffort));
+	// 只点了模型、没点 provider:按"谁真的支持这个推理档位"排出候选路由(见 providerCandidates)。
+	// 排在最前面的优先试;路由级失败(余额/凭据/档位)才换下一条,见 shouldTryNext。
+	const candidates = configuredProvider !== null || configuredModel === null
+		? []
+		: await providerCandidates(ctx, configuredModel, reasoningEffort, base.provider);
+	const attempts = planAttempts(base, configuredModel, configuredProvider, reasoningEffort, candidates);
+
+	// 逐条路由试:每条都是**全新的 Agent 会话**,互不影响。只有"这条路由本身不可用"才换下一条
+	// (余额/凭据/档位/未知模型),这些失败都发生在第一个模型请求上,还没执行任何工具。
+	let attempt = null;
+	for (let index = 0; index < attempts.length; index += 1) {
+		attempt = await runAttempt(ctx, config, io, attempts[index]);
+		if (attempt.reason === null || !shouldTryNext(attempt) || index === attempts.length - 1) break;
+		io.stderr.write(`dsh: ${attempt.reason.error.code}: ${attempt.reason.error.message} —— 换下一条路由(${attempts[index + 1].provider})重试\n`);
+	}
+	const { selection, outcome } = attempt;
+	const reason = attempt.reason;
+	const metadata = {
+		sessionId: attempt.sessionId,
 		workspace: process.cwd(),
 		provider: selection.provider,
 		model: selection.model,
@@ -368,7 +502,7 @@ async function run(ctx, config, io) {
 		stopReason: reason === null ? null : reason.kind,
 		error: reason === null ? null : reason.error ?? null,
 		resultChars: outcome.text.length,
-		durationMs: Date.now() - startedAt,
+		durationMs: Date.now() - attempt.startedAt,
 		finishedAt: new Date().toISOString(),
 	};
 
@@ -386,6 +520,9 @@ async function run(ctx, config, io) {
  * @param config - 已校验的配置。
  */
 export function apply(ctx, config) {
+	// `--print-model-catalogue` 是"只问登记表"的模式:由 subagent-models 回答就够,
+	// runner 在同一个进程里也挂着,必须让位 —— 否则它会拿空任务去起一轮真会话。
+	if (config.printCatalogue === true) return;
 	const exit = ctx.get('appExit');
 	if (exit === undefined) throw new Error('subagent-runner: 启动器必须在树挂载前提供 ctx.appExit');
 	const io = {

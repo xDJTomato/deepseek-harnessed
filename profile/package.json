@@ -6,9 +6,13 @@
     "profile": {
       "bundles": [
         "@deepseek-ai/dsh-base",
-        "@deepseek-ai/dsh-headless"
+        "@deepseek-ai/dsh-headless",
+        "dsh-cost-meter"
       ],
       "patchReload": "startup"
     }
+  },
+  "dependencies": {
+    "dsh-cost-meter": "1.8.19"
   }
 }

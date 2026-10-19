@@ -17,12 +17,12 @@ MCP 服务器名称统一为 **`dsh`**，各客户端中的工具命名格式如
 
 在未配置默认模型的情况下，首次调用 `dsh_health` 或 `dsh_task` 时，返回内容末尾将附加一段包含 6 行指引的**首次接入引导说明**。调用方 Agent 按以下流程执行初始化：
 
-1. **获取已接入模型列表**：读取 `dsh_health` 返回的 `models.providers`（按服务商分组）。模型权威来源是叶子 profile 的**实际生效配置**（`$DSH_HOME/profiles/subagent/cordis.patch.yml` → `$DSH_HOME/cordis.patch.yml` → `settings.yaml.imported` → 旧位置 `settings.yaml`），请勿自行构造不存在的模型 ID。
+1. **获取已接入模型列表**：读取 `dsh_health` 返回的 `models.providers`（按服务商分组）。清单的权威来源是 **DSH 自己的模型登记表**（叶子 profile 以 `--print-model-catalogue` 只枚举、不推理地读 `llm.listProviders()` / `llm.listModels()`；`models.source` 会写明这次用的是 `native` / `cache` / `yaml`），请勿自行构造不存在的模型 ID。
 2. **确认默认模型选择**：由于 MCP 服务不直接与用户交互，需由调用方 Agent 将可用模型列表展示给用户并获取选择。
 3. **写入配置**：调用 `dsh_setup(default_model: "<模型 id>")`，或使用预设方案 `dsh_setup(preset: "本项目方案")`。若传入未接入的模型 ID，服务将直接报错并返回可用列表。
 4. **展示策略文件路径**：引导说明中包含 `fileUrl`（形如 `file:///…/config/model-policy.md`），用户可直接编辑该文件调整模型选择规则，修改后即时生效。
 
-完成配置后（策略文件中 `默认模型:` 已写入有效值），后续响应将不再包含引导说明，`dsh_health` 中的 `modelPolicy.defaultModel` 即为当前默认模型。日常任务分派时，可按策略文件规则在 `dsh_task` 中传入 `model` 参数；若指定的 `model` 不存在，服务将直接报错（返回 `UNKNOWN_MODEL` 错误代码），不进行静默回退。
+完成配置后（策略文件中 `默认模型:` 已写入有效值），后续响应将不再包含引导说明，`dsh_health` 中的 `modelPolicy.defaultModel` 即为当前默认模型。日常任务分派时，可按策略文件规则在 `dsh_task` 中传入 `model` 参数；**不传 `model` 时用策略文件里那一行 `默认模型:`**（能在已接入清单里匹配到才用，匹配不到就交回 DSH 自己配置的默认模型）；若指定的 `model` 不存在，服务将直接报错（返回 `UNKNOWN_MODEL` 错误代码），不进行静默回退。
 
 后续如需修改模型规则，可直接编辑 `~/.dsh/subagent/config/model-policy.md`，或再次调用 `dsh_setup`。策略文件路径支持通过 `DSH_SUBAGENT_POLICY` 环境变量覆盖（详见 [配置参考文档 §1.5](./configuration.md)）。
 

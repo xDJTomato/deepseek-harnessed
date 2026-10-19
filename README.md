@@ -95,7 +95,8 @@ node test/monitor-live-probe.mjs               # 观察器 + 宿主判活
 ## 安全与运行边界
 
 - **网络边界**：桥接层自身不发起外部网络连接，仅负责启动本地 `dsh` 子进程，并读写 `$DSH_HOME` 与本地工具配置文件。
-- **默认权限**：默认执行权限为 `danger-full-access`（允许无审批读写操作，与外部调用方工具权限一致）。如需收紧权限，可在调用时传入 `permission: "workspace-write"` 或 `"read-only"`，或通过环境变量 `DSH_SUBAGENT_PERMISSION` 修改默认级别。
+- **默认权限**：默认执行权限为 `workspace-write`（可读写**目标工作空间**，工作空间之外的文件操作由 DSH 沙箱拒绝）。需要全盘读写时在调用时显式传 `permission: "danger-full-access"`，要更紧可传 `"read-only"`；也可用环境变量 `DSH_SUBAGENT_PERMISSION` 改默认级别。
+- **默认工具形态**：叶子进程以 **PTC（程序化工具调用）** 形态运行——模型写一段 TypeScript、经 `run_code` 调度工具，而不是一次一个原生工具调用。该选择由起进程时的 `DSH_TOOLS_MODE=ptc` 给出（`lib/tasks.mjs` 默认设置，可用 `DSH_SUBAGENT_TOOLS_MODE=native` 改回）。
 - **运行数据保护**：`state/` 目录存放私有运行时数据，已在 `.gitignore` 中排除。日志、心跳与任务记录文件（`task.json` / `meta.json` / `stderr.log`）包含本地绝对路径、工作空间名、提示词与任务输出。仓库内不包含任何真实任务现场数据。
 - **配置写入安全**：安装脚本在修改配置文件前均生成备份副本（`.bak-dshsubagent-<时间戳>` 或 `<原文件>.bak-dshsubagent-<时间戳>`），遇到无法解析的 JSON 文件自动跳过，不覆盖现有数据。
 - **运行平台**：当前仅针对 **Windows** 环境开发与验证，依赖 `taskkill` 与 PowerShell 进程管理机制。
@@ -166,7 +167,7 @@ MCP 服务器名称统一为 **`dsh`**，在各客户端中工具名称形如 `m
 | `dsh_task_status` | 查询任务状态或继续等待；返回 `expected_seconds`、`deadlineAt`、`remainingSeconds`、`process_tree`（实时后代进程数与整树 CPU 耗时）与 `recent_activity`（子代理此刻在干什么，包括 `activity` 事件）；`ok` 时一并返回 DSH 的最终答复全文 |
 | `dsh_task_cancel` | 优雅取消任务：发送终止标记并通知子代理进程安全收尾退出 |
 | `dsh_task_kill` | 强制终止进程树：支持按 `job_id` 或按 `caller` 批量终止该调用方的全部任务；针对外部进程调用 `taskkill` 并校验退出码（失败时如实报告 `killed:false` 而非报告 `killed: true`）；返回实际终止与已结束的任务清单 |
-| `dsh_health` | 健康探活：返回解析到的 dsh 启动器、`DSH_HOME`、默认工作空间、默认模型、每个调用方的并发数（`activeByCaller`）、每个实时任务的截止与进度（`liveTasks`）、最近任务列表，以及已接入模型列表（`models`：按 provider 分组，含 `defaultModel` 与枚举失败时的 `error`）和模型策略配置（`modelPolicy.path` / `fileUrl` / `defaultModel` / `presets`） |
+| `dsh_health` | 健康探活：返回解析到的 dsh 启动器、`DSH_HOME`、默认工作空间、默认模型、每个调用方的并发数（`activeByCaller`）、每个实时任务的截止与进度（`liveTasks`）、最近任务列表，以及已接入模型列表（`models`：按 provider 分组，含 `defaultModel`、说明来源的 `source`（`native` 原生登记表 / `cache` 上次成功结果 / `yaml` 兜底解析）与枚举失败时的 `error`）和模型策略配置（`modelPolicy.path` / `fileUrl` / `defaultModel` / `defaultReasoningEffort` / `presets`） |
 | `dsh_setup` | 首次接入配置：将用户选定的默认模型写入策略文件（`config/model-policy.md`），只改写 `默认模型:` 声明行，保留文件其余内容与用户自定义修改。支持三种参数：`default_model`（必须为本实例已接入模型，裸 id 或 `provider/id`）、`preset`（如 `本项目方案`）或 `policy_markdown`（替换正文）。输入无效时直接报错（`isError:true`）并列出可用模型清单 |
 
 ### `dsh_task` 参数详细定义
@@ -179,9 +180,9 @@ MCP 服务器名称统一为 **`dsh`**，在各客户端中工具名称形如 `m
 | `workspace` | 可选字符串 | 目标工作空间的绝对路径；缺省时依次尝试外部调用方工作空间（MCP roots）与服务器当前工作目录（server cwd） |
 | `wait_seconds` | 可选数值（默认 45） | 本次调用最多阻塞等待的秒数（默认 45 秒短超时，推荐直接省略）；传入 `0` 表示立即返回 `job_id`（不推荐，会拆解为多轮轮询，且不要传 `wait_seconds: 0`）。建议不要传递大于 60 的数值，多数 Agent 客户端单次工具超时阈值为 60 秒（见 §2.3） |
 | `timeout_seconds` | 可选数值（默认 1800） | 外层绝对超时时间（秒），作为第二重兜底保护，与 `expected_seconds` 截止机制同时生效 |
-| `model` / `provider` | 可选字符串 | 单次任务指定模型与服务商。模型清单动态从 `dsh_health` 中的 `models.providers`（权威来源是叶子 profile 的实际生效配置(`$DSH_HOME/profiles/subagent/cordis.patch.yml` → `$DSH_HOME/cordis.patch.yml` → `settings.yaml.imported` → 旧位置 `settings.yaml`,按序合并)；`models: [ … ]` 流式与 `models:` 下 `- id:` 块式两种写法都认）获取，规则配置见 `config/model-policy.md`。可调用 `dsh_setup(preset: "本项目方案")` 切换预设。省略 `model` 沿用默认模型；指定未接入模型时直接报错（返回 `UNKNOWN_MODEL` 或 `NO_ADAPTER`），不进行静默回退 |
-| `reasoning_effort` | 可选字符串 | 单次任务指定推理强度档位（必须为该模型在生效配置的 `models[].reasoningEfforts` 中声明的档位，常见包括 `off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`）。传入未声明的档位时直接报错（返回 `UNSUPPORTED_REASONING_EFFORT` 快速失败，耗时约 0.5 秒且不调用模型）。结果头部回显 `model:` 与 `reasoning_effort:` 实际生效值 |
-| `permission` | 可选字符串（默认 `danger-full-access`） | 权限模式：`read-only`、`workspace-write`、`danger-full-access` |
+| `model` / `provider` | 可选字符串 | 单次任务指定模型与服务商。模型清单动态取自 `dsh_health` 的 `models.providers`，权威来源是 **DSH 自己的模型登记表**（叶子 profile 用 `--print-model-catalogue` 读 `llm.listProviders()` / `llm.listModels()`，只枚举不推理；结果带缓存，探针起不来才退回解析 profile patch 与 `settings.yaml`，`models.source` 写明用的是哪一层）。规则配置见 `config/model-policy.md`。可调用 `dsh_setup(preset: "本项目方案")` 切换预设。**省略 `model` 时先用策略文件里的 `默认模型:` + `默认推理强度:`**（发布默认 `deepseek-flash` / `max`）；裸模型 id 若在多条 provider 路由下都有登记，由叶子进程按「该路由是否声明了这个推理档位」选路，路由级失败（余额 / 凭据 / 档位）自动换下一条；匹配不到已接入清单就交回 DSH 自己配置的默认模型；指定未接入模型时直接报错（返回 `UNKNOWN_MODEL` 或 `NO_ADAPTER`），不进行静默回退 |
+| `reasoning_effort` | 可选字符串 | 单次任务指定推理强度档位（必须为该模型在生效配置的 `models[].reasoningEfforts` 中声明的档位，常见包括 `off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`）。传入未声明的档位时直接报错（返回 `UNSUPPORTED_REASONING_EFFORT` 快速失败，耗时约 0.5 秒且不调用模型；若该模型在别的路由下声明了这一档，叶子会先换路由重试）。结果头部回显 `model:` 与 `reasoning_effort:` 实际生效值 |
+| `permission` | 可选字符串（默认 `workspace-write`） | 权限模式：`read-only`、`workspace-write`、`danger-full-access` |
 | `raw_prompt` | 可选布尔值 | 为 `true` 时不附加默认的「委托说明」前缀，直接传递原始提示词 |
 
 调用方标识识别：每个 MCP 连接在 `initialize` 请求中携带的 `clientInfo.name` 会记录至该连接创建的每个任务元数据中（`task.json` 的 `caller` 与 `callerVersion`，并在工具结果的 `caller:` 行显示）。未提供时默认为 `"unknown"`，命令行直接调用记录为 `"cli"`。GUI 监控面板与 `dsh_health` 均基于此标识进行分组。
@@ -259,11 +260,11 @@ DSH_SUBAGENT_STATUS_WAIT_SECONDS=540   # dsh_task_status 的默认等待
 
 | 环节 | 技术实现与定义 |
 | --- | --- |
-| 已接入模型 | 通过 `dsh_health` 返回 `models:{ providers:{ <你的路由名>:[…] }, defaultModel, error }`（即 `dsh_health.models`），从叶子 profile 的实际生效配置(`$DSH_HOME/profiles/subagent/cordis.patch.yml` → `$DSH_HOME/cordis.patch.yml` → `settings.yaml.imported` → 旧位置 `settings.yaml`,按序合并)解析 `llm-pi-ai.providers.<route>.models` 与 `llm-deepseek.models` 里的 `id`（只认这两处，绝不整文件扫 `id:`）；一份可读文件都没有、或一处都没认出时，在 `error` 里点明实际搜过的路径。<br>注意 **provider 配置本身是本机私有信息**（含内网网关地址与密钥环境变量名），不进公开仓库：仓库的 `profile/cordis.patch.yml` 只留说明，真正的 `llm-pi-ai` 条目由 `install.mjs` 从本机已有配置里抽出并注入 `$DSH_HOME/profiles/subagent/cordis.patch.yml` 的 `dsh-subagent-llm-providers` 标记块（可用 `DSH_SUBAGENT_PROVIDERS_FILE` 或 `$DSH_HOME/llm-providers.patch.yml` 指定自己的片段） |
-| 模型清单来源 | 见上表「已接入模型」；DSH 0.1.7-rc.2 起设置改由 profile 的 patch 层承载，旧的 `$DSH_HOME/settings.yaml` 被一次性导入后改名成 `settings.yaml.imported` —— 两处都读，所以升级前后都枚举得到 |
-| 策略文件 | 路径为 `~/.dsh/subagent/config/model-policy.md`。顶部声明 `默认模型: <模型 id>`，`## 预设方案` 下包含各 `### <名字>` 分组与 `预设默认模型: <模型 id>` 行，`## 模型选择规则` 为说明文本。桥接层每次调用均重新读取该文件（可通过 `DSH_SUBAGENT_POLICY` 覆盖路径） |
+| 已接入模型 | 通过 `dsh_health` 返回 `models:{ providers:{ <你的路由名>:[…] }, defaultModel, source, error }`（即 `dsh_health.models`）。**主来源是 DSH 自己的登记表**：叶子 profile 的 `subagent-models.js` 在 `--print-model-catalogue` 下只读 `llm.listProviders()` 与 `llm.listModels()`（不建会话、不发模型调用），结果规范化后按 provider 分组返回，`source` 为 `native`。探针暂时不可用时用磁盘缓存（`source: cache`，`stale` 标记新鲜度），缓存也没有才退回解析配置文件（`source: yaml`，探针失败原因在 `modelCatalogueError` 里；这条兜底按序合并 `$DSH_HOME/profiles/subagent/cordis.patch.yml` → `$DSH_HOME/cordis.patch.yml` → `settings.yaml` → `settings.yaml.imported`，只认 `llm-pi-ai.providers.<route>.models` 与 `llm-deepseek.models` 里的 `id`，绝不整文件扫 `id:`，一份都没认出时在 `error` 里点明搜过的路径）。<br>注意 **provider 配置本身是本机私有信息**（含内网网关地址与密钥环境变量名），不进公开仓库：仓库的 `profile/cordis.patch.yml` 只留说明，真正的 `llm-pi-ai` 条目由 `install.mjs` 从本机已有配置里抽出并注入 `$DSH_HOME/profiles/subagent/cordis.patch.yml` 的 `dsh-subagent-llm-providers` 标记块（可用 `DSH_SUBAGENT_PROVIDERS_FILE` 或 `$DSH_HOME/llm-providers.patch.yml` 指定自己的片段） |
+| 模型清单来源 | 见上表「已接入模型」：原生登记表优先（`source: native`），磁盘缓存次之（`source: cache`），最后才按序解析 profile patch 与 `settings.yaml` / `settings.yaml.imported`（`source: yaml`）。`DSH_SUBAGENT_CATALOGUE=off` 可关掉探针只走兜底 |
+| 策略文件 | 路径为 `~/.dsh/subagent/config/model-policy.md`。顶部声明 `默认模型: <模型 id>` 与 `默认推理强度: <档位>`（发布默认 `deepseek-flash` / `max`），`## 预设方案` 下包含各 `### <名字>` 分组与 `预设默认模型: <模型 id>` 行，`## 模型选择规则` 为说明文本。桥接层每次调用均重新读取该文件（可通过 `DSH_SUBAGENT_POLICY` 覆盖路径）。`dsh_health` 的 `modelPolicy.defaultReasoningEffort` 回显解析到的档位 |
 | 访问链接 | 通过 `dsh_health` 返回 `modelPolicy.path` 与 `modelPolicy.fileUrl`（如 `file:///C:/Users/…/model-policy.md`，使用 `modelPolicy` 统一管理） |
-| 预设方案 | 包含 `### 本项目方案`（`本项目方案`）：默认任务使用 `deepseek-v4.1-flash`，文档编写使用 `gemini-3.7-flash`，复杂任务由主模型直接处理 |
+| 预设方案 | 包含 `### 本项目方案`（`本项目方案`）：默认任务使用 `deepseek-flash`（推理强度 `max`），文档编写使用 `gemini-3.7-flash`，复杂任务由主模型直接处理 |
 
 在未配置默认模型时（策略文件中为 `默认模型: (未指定)`），`dsh_task` 与 `dsh_health` 返回内容末尾附带 6 行初始化指引（包含查询模型、获取用户选择、调用 `dsh_setup` 写入配置及提供策略文件链接四要素）。写入配置后指引自动停用。
 
@@ -376,12 +377,13 @@ subagent-runner.js    一次性 runner:跑一轮 → 写 result.txt / meta.json 
 相对于官方 Headless 的调整：
 
 1. 启动器支持 `--prompt-stdin`、`--result-file`、`--metadata-file`、`--model`。
-2. 运行器输出最终答复与 `{sessionId, model, stopReason, durationMs}` 元数据，支持单次调用指定模型。
+2. 运行器输出最终答复与 `{sessionId, model, stopReason, durationMs}` 元数据，支持单次调用指定模型；模型没有点名 provider 时按推理档位选路（见 §2 的 `model` / `provider` 行）。
 3. 停用标题自动生成插件以减少模型调用。
 4. 审批策略固定为 `never`。
-5. 沙箱模式由 `DSH_SUBAGENT_PERMISSION` 环境变量控制（默认 `danger-full-access`）。
-6. 显式声明无人值守权限预设表（避免 `--permission workspace-write` 启动异常）。
-7. 施加叶子节点限制条件，禁止外部任务递归分派子代理。
+5. 沙箱模式由 `DSH_SUBAGENT_PERMISSION` 环境变量控制（默认 `workspace-write`，即工作区可读写、工作区外拒绝）。
+6. 显式声明无人值守权限预设表（三种模式都对应 `approval: never`，`workspace-write` 不会因预设不匹配而启动失败）。
+7. 工具形态默认 PTC：起叶子进程时设 `DSH_TOOLS_MODE=ptc`（`tools` 行读这个变量；可用 `DSH_SUBAGENT_TOOLS_MODE=native` 改回原生工具调用）。
+8. 施加叶子节点限制条件，禁止外部任务递归分派子代理。
 
 ### 4.1 叶子限制条件（禁止外部任务递归派生子代理）
 
@@ -423,8 +425,8 @@ type task.md | dsh --profile subagent --prompt-stdin
 
 | 关注维度 | 执行现状 |
 | --- | --- |
-| 默认权限 | `danger-full-access`（全权限读写模式） |
-| 收紧方式 | 传入参数 `permission: "workspace-write"` / `"read-only"` 或设置环境变量 `DSH_SUBAGENT_PERMISSION` |
+| 默认权限 | `workspace-write`（目标工作区可读写；工作区之外由沙箱拒绝） |
+| 放宽方式 | 传入参数 `permission: "danger-full-access"`（全盘读写）或设置环境变量 `DSH_SUBAGENT_PERMISSION` |
 | 审批模式 | 子代理进程固定为 `never`，越界操作由沙箱直接拒绝 |
 | 并发控制 | 单个 MCP 服务进程默认最多 4 个并发 DSH 实例，超出排队等待（详见 §6.1） |
 | 审计记录 | 每次任务持久化至 `$DSH_HOME/subagent/state/tasks/<job-id>/{prompt.md,result.txt,meta.json,stderr.log,task.json}` |
@@ -435,20 +437,18 @@ type task.md | dsh --profile subagent --prompt-stdin
 1. Profile 显式定义完整的权限预设映射表（三种模式均对应 `approval: never`），避免 `dsh-permission-presets` 在构造期抛出 `composed sandbox and approval defaults match no preset` 异常导致进程退出。
 2. 运行器在执行前通过 `permissionPresets.set()` 将目标权限写入当前会话事件流，工具层依据 `ctx.sandboxPolicy.resolve({session})` 动态解析沙箱策略；若锁定失败则直接报错退出。
 
-已知运行边界：两个 profile 的沙箱相关行集合一致（`sandbox-local` / `sandbox-policy` / `pwsh-sandbox` / `fs-sandbox`）。在 Windows 环境下，`workspace-write` 与 `read-only` 模式会导致 `pwsh` 工具无法拉起交互式 Shell，返回全空文本且无 `[exit code: N]` 或 `[sandbox: …]` 标记。在此类受限模式下，文件操作应使用 `write` / `edit` 工具（会返回 `[sandbox: file access denied under … mode]`），执行脚本工作应使用 `danger-full-access`。
+已知运行边界：两个 profile 的沙箱相关行集合一致（`sandbox-local` / `sandbox-policy` / `pwsh-sandbox` / `fs-sandbox`）。**DSH 0.2.1 上 `workspace-write` 与 `read-only` 模式下 `pwsh` 工具可正常执行**（实测 `Write-Output SPAWN-PING` 返回 `"SPAWN-PING\r\n"`、退出码 0、`sandbox.mode=workspace-write`、`denied=false`）；此前 0.1.x 出现过的「受限模式下 Shell 返回空文本」已在 0.2.1 消失，但 0.1.x 的旧实例仍可能复现。
 
-### 5.1 沙箱模式下 Shell 空转检测
+### 5.1 沙箱模式下 Shell 空转检测（历史兜底，0.2.1 起不再触发）
 
-在 `workspace-write` 或 `read-only` 模式下，DSH 底层沙箱机制会导致 Shell 工具返回空内容（`"\r\n"`）且标记为 `isError: false`，进程并未实际启动。在同一条 `Write-Output SPAWN-PING` 测试中，读取真实会话日志的 `tool/result` 记录：
+0.1.x 的 `workspace-write` / `read-only` 曾出现 Shell 工具返回空内容（`"\r\n"`）且 `isError: false`、进程并未实际启动的情况：
 
-| 权限等级 | 命令实际返回数据 | 执行状态 |
+| 权限等级 | 0.1.x 实测命令返回数据 | 0.2.1 实测 |
 | --- | --- | --- |
-| `danger-full-access` | `SPAWN-PING\r\nELAPSED_MS=59\r\n` | 进程正常启动并执行 |
-| `workspace-write` / `read-only` | `"\r\n"`（`isError: false`） | 进程未执行 |
+| `danger-full-access` | `SPAWN-PING\r\nELAPSED_MS=59\r\n` | 正常 |
+| `workspace-write` / `read-only` | `"\r\n"`（`isError: false`） | `SPAWN-PING\r\n`、退出码 0（正常） |
 
-对照实验证明：执行 `exit 3` 不返回 `[exit code: 3]`，`Start-Sleep -Seconds 5` 不发生阻塞，`Set-Content` 与 `cmd /c echo > file` 不生成文件，而文件读写工具正常运行。
-
-桥接层在任务结束时会解析会话日志，检测是否存在此类空转的 Shell 调用。若存在，将在答复末尾附加包含调用次数与命令样例的告警，并在元数据中记录 `shellHollowCalls` 与 `shellHollowSamples`。需执行命令的任务应显式指定 `permission: "danger-full-access"`，可通过分派执行 `echo` 命令验证执行状态。
+桥接层仍保留这段兜底：任务结束时会解析会话日志，检测这类空转的 Shell 调用；若存在，会在答复末尾附加调用次数与命令样例的告警，并在元数据中记录 `shellHollowCalls` 与 `shellHollowSamples`。所以「任务跑了但命令没执行」不会被伪装成成功。
 
 ---
 
@@ -749,7 +749,8 @@ node $env:USERPROFILE\.dsh\subagent\test\ledger-liveness-probe.mjs   # 20 项:�
 | `DSH_SUBAGENT_MONITOR_CMD` | 未设置 | 自定义拉起的可执行文件路径 |
 | `DSH_SUBAGENT_MONITOR_ARGS` | 未设置 | 启动时追加的命令行参数 |
 | `DSH_SUBAGENT_HOST_PROBE_TIMEOUT_MS` | `15000` | 宿主进程查询单次超时时间（毫秒） |
-| `DSH_SUBAGENT_PERMISSION` | `danger-full-access` | 子代理默认权限等级 |
+| `DSH_SUBAGENT_PERMISSION` | `workspace-write` | 子代理默认权限等级（可用 `danger-full-access` 放宽、`read-only` 收紧） |
+| `DSH_SUBAGENT_TOOLS_MODE` | `ptc` | 叶子进程的工具形态：`ptc`（程序化工具调用，`run_code`）或 `native`；起进程时写成 `DSH_TOOLS_MODE` 交给 DSH |
 | `DSH_SUBAGENT_RESULT_CLIP` | `60000` | 返回结果的最大字符数截断上限 |
 | `DSH_SUBAGENT_ACTIVITY_CLIP` | `1800` | 状态轮询活动日志的最大字符数上限 |
 | `DSH_SUBAGENT_OBSERVER_USAGE_REFRESH_MS` | `5000` | 单个会话日志重新折叠用量的最小间隔（毫秒） |
@@ -767,7 +768,7 @@ CLI 命令行支持参数：`--expected-seconds <n>`、`--acceptance <text>`、`
 ## 8. 常见问题解答
 
 **Q: 传入 `permission: "workspace-write"` 时任务在 2 秒内失败并抛出 `permission: composed sandbox and approval defaults match no preset` 异常？**
-问题原因与修复：DSH 内置预设表将 `workspace-write` 与 `read-only` 配置为 `approval: ask`，与无人值守模式的 `approval: never` 不匹配，导致插件在构造期抛错。Profile 已显式定义完整的权限预设表，为三种模式均配置 `never` 审批策略，三种权限等级均可正常运行。
+问题原因与修复：DSH 内置预设表将 `workspace-write` 与 `read-only` 配置为 `approval: ask`，与无人值守模式的 `approval: never` 不匹配，导致插件在构造期抛错。Profile 已显式定义完整的权限预设表，为三种模式均配置 `never` 审批策略，三种权限等级均可正常运行（`workspace-write` 现为默认值，0.2.1 实测正常）。
 
 **Q: 指定 `permission: "workspace-write"` 时子代理仍可写入工作区外部？**
 问题原因：全局设置可能覆盖 Profile 的默认预设（`config.defaultPreset` 与 `permission.defaultPreset`）。当前版本运行器在执行前会将权限等级写入本次会话的事件流中，确保沙箱策略按当前会话权限执行。可通过 `node test/session-perm-probe.mjs <sessionId>` 验证实际生效的权限。
@@ -800,7 +801,7 @@ CLI 命令行支持参数：`--expected-seconds <n>`、`--acceptance <text>`、`
 排查方式：`status: deadline` 表示超出预估时间（需调整 `expected_seconds` 或拆分任务）；`status: timeout` 表示达到外层 `timeout_seconds` 上限；`status: stalled` 表示看门狗检测到长时间无进展（详见 §6.2）。同时应确认外部客户端的工具调用超时配置（如 `MCP_TOOL_TIMEOUT`）。
 
 **Q: 如何切换模型？**
-- 查询可用模型：通过 `dsh_health` 的 `models.providers`（即 `dsh_health.models`）查看当前实例已接入的模型列表（源自叶子 profile 的实际生效配置(`$DSH_HOME/profiles/subagent/cordis.patch.yml` → `$DSH_HOME/cordis.patch.yml` → `settings.yaml.imported` → 旧位置 `settings.yaml`,按序合并)）。
+- 查询可用模型：通过 `dsh_health` 的 `models.providers`（即 `dsh_health.models`）查看当前实例已接入的模型列表（主来源是 DSH 原生登记表，`models.source` 说明这一次用的是 `native` / `cache` / `yaml`）。
 - 编辑策略文件：修改 `~/.dsh/subagent/config/model-policy.md`，调整默认模型或预设方案（`modelPolicy`），修改后即时生效。
 - 单次任务指定：在 `dsh_task` 中传入 `model`、`provider` 与 `reasoning_effort` 参数（如 `dsh_task(model: "gemini-3.7-flash", provider: "my-gateway", reasoning_effort: "high")`）或通过 CLI 执行 `dsh-subagent -m <模型 id>`。参数无效时将直接报错（`UNKNOWN_MODEL` / `NO_ADAPTER` / `UNSUPPORTED_REASONING_EFFORT`）。可通过调用 `dsh_setup(default_model: "…")` 或 `dsh_setup(preset: "本项目方案")` 修改默认配置。
 - 全局修改：在 DSH 桌面设置中修改默认模型。
@@ -898,7 +899,7 @@ CLI 命令行支持参数：`--expected-seconds <n>`、`--acceptance <text>`、`
 | 动态指定模型与推理强度（0.1.7） | MCP 服务器实测（包含 `reasoning_effort=low`、错误模型、错误档位、类型校验）+ `npm run test:all` | ✅ **315/315 项全绿**：指定 `reasoningEffort:"low"` 与 `model=deepseek-v4.1-flash` 正确传递至任务元数据；指定未知模型返回 `UNKNOWN_MODEL`（474ms 快速返回且 `result.txt` 0 字节）；指定不支持档位返回 `UNSUPPORTED_REASONING_EFFORT`（557ms）；非字符串类型返回 `isError:true` 拒绝执行并指明错误参数名；工具结果头部回显 `reasoning_effort: <值>` |
 | 推理强度固定为 high（§3.1） | `dsh --profile subagent --reasoning-effort high` 测试 | ✅ 声明档位后正常退出并记录 `reasoningEffort: "high"`；网关测试显式 `high` 消耗 `reasoning_tokens=35`（未声明时消耗 `reasoning_tokens=103`）；配置错误时直接报错（`NO_ADAPTER`） |
 | 执行等待策略验证（§2.3） | `node test/wait-policy-probe.mjs` | ✅ 11/11 项通过：默认 `defaultWaitSeconds=45` 与 `statusWaitSeconds=30` 且均小于 60；不传 `wait_seconds` 时短任务在 3.5 秒内直接返回 `status: ok` 无需轮询；`DSH_SUBAGENT_WAIT_SECONDS=5` 时超时任务正确返回 `status: running` 并提示 `dsh_task_status(job_id="…", wait_seconds=30)` 轮询；`dsh_task_status` 不传 `wait_seconds` 时自动等待 20.7s 至终态 |
-| 受限模式 Shell 空转测试（§5.1） | 三种权限模式实测对比与日志比对 | ✅ `danger-full-access` 正常返回命令输出；`workspace-write` 与 `read-only` 返回空文本且 `isError:false` |
+| 受限模式 Shell 空转测试（§5.1） | 三种权限模式实测对比与日志比对 | ⚠️ 0.1.x 实测：`danger-full-access` 正常返回命令输出；`workspace-write` 与 `read-only` 返回空文本且 `isError:false`。**0.2.1 复测已正常**：`workspace-write` 下 `Write-Output SPAWN-PING` 返回 `"SPAWN-PING\r\n"`、退出码 0、`sandbox.mode=workspace-write`、`denied=false`（空转检测逻辑保留为兜底） |
 | 空转检测准确率 | 真实会话日志执行 `detectHollowShellCalls` | ✅ 准确检测出 11 次受限空转调用并提取命令内容，全权限日志检测出 0 次，无误报 |
 | 会话日志命名兼容性 | `node test/exec-surface-probe.mjs` + `observer-selftest` | ✅ 适配 `session*.jsonl.zstd` 命名规则并优先解析 `session.v3.jsonl.zstd` 格式日志 |
 | 请求取消联动测试 | 任务轮询期间发送 `notifications/cancelled` | ✅ 7/7 项通过：任务转为 `cancelled` 状态，请求立即返回，子进程实际终止（通过 `process.kill(pid,0)` 校验），服务正常退出 |
@@ -914,3 +915,4 @@ CLI 命令行支持参数：`--expected-seconds <n>`、`--acceptance <text>`、`
 | 动态模型管理策略体系 | `npm run test:all`（10 个测试脚本，包含 `test:all` 组合调用） | ✅ **402 项**（`selftest.mjs` 包含 105 条断言）；模型列表动态从叶子 profile 的实际生效配置解析（`$DSH_HOME/profiles/subagent/cordis.patch.yml` → `$DSH_HOME/cordis.patch.yml` → `settings.yaml.imported` → 旧位置 `settings.yaml`；流式 `models: [ … ]` 与块式 `models:` 下 `- id:` 两种写法都认，多份合并去重保序），策略文件 `config/model-policy.md` 支持用户自定义与预设方案（`modelPolicy.path` / `fileUrl` / `presets`），未配置时输出初始化引导，执行 `dsh_setup(default_model:)` 写入配置后引导自动关闭，非法参数准确返回 `isError:true` 拒绝处理，短任务正常返回 `status=ok` |
 | 面板不再常驻动画、不再每秒重渲染（0.1.11） | `node test/panel-selftest.mjs` + 本机 DSH Desktop GPU 进程采样（独立进程，每 5 秒一次） | ✅ **144/144 项全绿**（新增 5 条性能防回归断言：扫描光只准挂在 `data-busy="true"` 规则上、base 的 `.sap-card::after` 不含 `animation`、`@keyframes sap-sweep` 只动 `transform` 不含 `left:`、空闲时 `.sap-root` 为 `data-busy="false"`、心跳为「有任务 1000 / 空闲 30000」）。修前实测**空闲态**（无任何任务在跑）宿主 GPU 进程稳定 97%–118% 单核、renderer 仅 12%、Edge 全部进程 0%，证明瓶颈在合成/光栅而非 JS；成因是常驻无限动画 × 设置窗那层全视口 `backdrop-filter` 每帧重算。0.1.12 起 `npm run test:all` **402 项全绿**；此前唯一未通过的 `wait-policy-probe` 默认等待断言，根因是叶子 profile 拿不到默认模型导致任务超时，已随 0.1.12 的模型配置注入一并修好 |
 | 适配 DSH 2.0.15 / 内核 0.1.7-rc.2（0.1.12） | `npm run test:all` + `dsh --profile subagent --dump-config` 生效值 + 真机任务 | ✅ **402 项全绿**。①投影块补上 `kind`（新客户端按它分派，认不出就 `assertNever` 抛错、整块被丢弃 → 卡片空、⚡ 前缀消失）；②模型枚举改读 profile patch 层（0.1.7-rc.2 起 `settings.yaml` 被一次性导入后改名 `settings.yaml.imported`），流式与块式两种 YAML 写法都认，迁移前后都枚举得到；③`llm-pi-ai` 与 `agent-default-model` 由安装时从**本机自己的配置**注入叶子 profile（公开仓库不再带内网地址与密钥名），`--dump-config` 的生效值当场验证，不指定模型的 `dsh_task` 从必失败变为返回 `ok`（实测 19.0s 写完文件） |
+| 适配内核 0.2.1（0.1.13）+ 发布默认值 | `npm run test:all`（11 个脚本）+ `dsh --profile subagent` 真机任务 | ✅ **434 项全绿**（selftest 105 / panel 144 / ledger 82 / launcher 26 / leaf 14 / exec 11 / wait 11 / monitor 8 / monitor-autostart 26 / observer / model-catalogue 34）。①**凭据**：0.2.1 起 `apiKeyEnv` 先问 `credentials` 服务，headless 组合把它关掉了 → 叶子读不到 `$DSH_HOME/.credentials.yaml`，在 profile 里重新启用该行；②**模型枚举**：`subagent-models` 在插件树挂载中途就调 `llm.listProviders()`，0.2.1 下 provider 还没注册完 → 列表为空，改为先 `await ctx.get('loader')?.await()`；③**默认模型 `deepseek-flash` + 推理强度 `max`**：裸 id 在多条路由下登记但档位不同（实测某路由只到 `high`、另一条支持 `max`、还有一条支持 `max` 但余额为 0），叶子按 `resolveModelInfo` 声明的 `reasoningEfforts` 选路，并对余额/凭据/档位这类路由级失败自动换下一条（同一次任务实测：首条 `QUOTA` → 换路由 → `ok`）；④**默认权限 `workspace-write`**：实测 `Write-Output SPAWN-PING` 返回 `"SPAWN-PING\r\n"`、退出码 0；⑤**默认 PTC**：起叶子进程时设 `DSH_TOOLS_MODE=ptc`，实测模型工具清单里 `run_code` 存在（`tool-presentation` 行在 profile 组合层不生效，因为它声明的是预设挂载作用域） |

@@ -42,12 +42,14 @@ function subagentCommand() {
 		.option('--provider <id>', '本次调用使用的模型提供方(默认沿用 DSH 设置)')
 		.option('--model <id>', '本次调用使用的模型(默认沿用 DSH 设置)')
 		.option('--reasoning-effort <id>', '本次调用的推理强度')
+		.option('--print-model-catalogue', '只枚举 DSH 原生模型登记表并打印 JSON 后退场(不发任何模型调用、不建会话)')
 		.argument('[task...]', '任务提示词;多个词以空格拼接(等价于 --prompt)')
 		.addHelpText('after', `
 Examples:
   dsh --profile subagent --prompt-file C:\\path\\task.md --result-file C:\\path\\result.txt
   type task.md | dsh --profile subagent --prompt-stdin
   dsh --profile subagent --prompt "run the tests" --model deepseek-v4-pro
+  dsh --profile subagent --print-model-catalogue
 `);
 }
 
@@ -84,13 +86,16 @@ export function apply(ctx) {
 	const program = subagentCommand();
 	program.action(() => {
 		const options = program.opts();
+		// 目录探针不需要任务:它是"只问登记表"的模式,不该因为缺 prompt 而报用法错误。
+		const probe = options.printModelCatalogue === true;
 		const publish = (task) => {
-			if (typeof task !== 'string' || task.trim() === '') {
+			if (!probe && (typeof task !== 'string' || task.trim() === '')) {
 				program.error('error: 需要一个任务提示词:--prompt / --prompt-stdin / --prompt-file / 位置参数');
 				return;
 			}
 			ctx.provide(SUBAGENT_STARTUP_SERVICE, {
 				task,
+				printCatalogue: probe,
 				resultFile: typeof options.resultFile === 'string' ? options.resultFile : '',
 				metadataFile: typeof options.metadataFile === 'string' ? options.metadataFile : '',
 				provider: typeof options.provider === 'string' ? options.provider : '',
@@ -98,6 +103,11 @@ export function apply(ctx) {
 				reasoningEffort: typeof options.reasoningEffort === 'string' ? options.reasoningEffort : '',
 			});
 		};
+
+		if (probe) {
+			publish('');
+			return;
+		}
 
 		if (typeof options.prompt === 'string' && options.prompt.trim() !== '') {
 			publish(options.prompt);

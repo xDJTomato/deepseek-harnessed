@@ -170,6 +170,11 @@ async function main() {
 	rmSync(workspace, { recursive: true, force: true });
 	mkdirSync(workspace, { recursive: true });
 
+	// 模型目录的**原生探针**(lib/model-catalogue.mjs → 叶子 `--print-model-catalogue`)要起一个真 DSH 进程:
+	// 自检一律关掉,让既有的"YAML 兜底"断言保持确定性 —— 隔离 DSH_HOME 那几条尤其不能被真机清单串味。
+	// 原生路径(规范化 → 缓存 → 降级 → 策略默认值真的生效)由 test/model-catalogue-probe.mjs 离线覆盖。
+	process.env.DSH_SUBAGENT_CATALOGUE = 'off';
+
 	// 自检**绝不能**真的拉起 GUI:自动拉起的三种行为由 test/monitor-autostart-probe.mjs 用假 exe 覆盖,
 	// 这里只验证"接线"(字段有没有出现在结果里),所以显式关掉总开关。
 	//
@@ -188,7 +193,12 @@ async function main() {
 	const shippedDefault = /^默认模型:\s*(\S+)\s*$/m.exec(shippedPolicy)?.[1] ?? '';
 	check('发布物里「默认模型」是 (未指定) 或一个裸模型 id(这行本来就是给用户改的)',
 		shippedDefault === '(未指定)' || /^[\w.\-]+$/.test(shippedDefault), JSON.stringify(shippedDefault));
-	writeFileSync(policyPath, shippedPolicy.replace(/^默认模型:.*$/m, '默认模型: (未指定)'), 'utf8');
+	// 预设里的 `预设默认模型:` 同样是用户可编辑的:夹具副本里也把它钉成固定值,
+	// 否则"用户换了推荐模型"(本机确实换过)会把下面那条 preset 断言搞红 —— 与 默认模型 那次踩坑同源。
+	const fixturePolicy = shippedPolicy
+		.replace(/^默认模型:.*$/m, '默认模型: (未指定)')
+		.replace(/^预设默认模型:.*$/gm, '预设默认模型: deepseek-v4.1-flash');
+	writeFileSync(policyPath, fixturePolicy, 'utf8');
 	const client = new Client(process.execPath, [MCP_ENTRY], {
 		DSH_SUBAGENT_AUTOSTART_MONITOR: 'off',
 		DSH_SUBAGENT_POLICY: policyPath,
@@ -432,8 +442,8 @@ async function main() {
 	check('策略文件的 `默认模型:` 行被改写', /^默认模型: deepseek-v4\.1-flash$/m.test(afterDefault),
 		/^默认模型:.*$/m.exec(afterDefault)?.[0] ?? '未找到该行');
 	check('策略文件其余内容一字未动',
-		afterDefault.replace(/^默认模型:.*$/m, '') === shippedPolicy.replace(/^默认模型:.*$/m, '') && afterDefault.length > 100,
-		`${afterDefault.length} 字符 / 原文 ${shippedPolicy.length} 字符`);
+		afterDefault.replace(/^默认模型:.*$/m, '') === fixturePolicy.replace(/^默认模型:.*$/m, '') && afterDefault.length > 100,
+		`${afterDefault.length} 字符 / 原文 ${fixturePolicy.length} 字符`);
 	const healthAfter = textOf(await client.request('tools/call', { name: 'dsh_health', arguments: {} }));
 	check('指定过默认模型后引导块消失', !/首次接入/.test(healthAfter), payloadOf(healthAfter).modelPolicy?.defaultModel ?? '');
 	check('设过之后 modelPolicy.defaultModel 就是那个模型',

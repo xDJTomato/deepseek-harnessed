@@ -11,6 +11,7 @@
  * 用法: node test/ledger-liveness-probe.mjs
  */
 import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -26,7 +27,9 @@ const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 
 const home = mkdtempSync(join(tmpdir(), 'dsh-ledger-probe-'));
 process.env.DSH_HOME = home;
-const { killByCaller, killTreeSync, listTasks, taskState } = await import('../lib/tasks.mjs');
+const children = [];
+try {
+const { killByCaller, killTreeSync, listTasks, liveTaskInfos, taskState } = await import('../lib/tasks.mjs');
 
 const tasksRoot = join(home, 'subagent', 'state', 'tasks');
 mkdirSync(tasksRoot, { recursive: true });
@@ -45,15 +48,16 @@ function makeTask(id, { caller, pid, status = 'running', withMeta = false }) {
 		expectedSeconds: 300,
 		deadlineAt: new Date(Date.now() + 240000).toISOString(),
 	}, null, 2)}\n`, 'utf8');
-	if (withMeta) writeFileSync(join(dir, 'meta.json'), `${JSON.stringify({ phase: 'running' })}\n`, 'utf8');
+	if (withMeta) writeFileSync(join(dir, 'meta.json'), `${JSON.stringify({ phase: 'running', sessionId: 'probe-session' })}\n`, 'utf8');
 	return dir;
 }
 
 /** 一个确定已经死掉的 pid。 */
 async function deadPid() {
 	const child = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore', windowsHide: true });
+	children.push(child);
 	const pid = child.pid;
-	await new Promise((done) => child.on('exit', done));
+	await once(child, 'exit');
 	await sleep(300);
 	return pid;
 }
@@ -62,17 +66,69 @@ const CALLER = 'probe-ghost-caller';
 const dead = await deadPid();
 // 真在跑的:用一个长期活着的 node 进程当任务根进程。
 const aliveChild = spawn(process.execPath, ['-e', 'setInterval(() => {}, 3600000)'], { stdio: 'ignore', windowsHide: true });
+children.push(aliveChild);
+await once(aliveChild, 'spawn');
 await sleep(600);
 
-const ghostDir = makeTask('ledgergost-000000-00000001', { caller: CALLER, pid: dead });
-const liveDir = makeTask('ledgerlive-000000-00000002', { caller: CALLER, pid: aliveChild.pid });
+const ghostDir = makeTask('ledgergost-000000-00000001', { caller: CALLER, pid: dead, withMeta: true });
+const liveDir = makeTask('ledgerlive-000000-00000002', { caller: CALLER, pid: aliveChild.pid, withMeta: true });
 const noPidDir = makeTask('ledgernopid-000000-00000003', { caller: CALLER, pid: null });
 // 另一条"记录说在跑、但 meta.json 已写明结束原因"的:应按 meta 推导成终态(不是幽灵)。
 const derivedDir = makeTask('ledgerdrvd-000000-00000004', { caller: CALLER, pid: dead, withMeta: false });
 writeFileSync(join(derivedDir, 'meta.json'), `${JSON.stringify({ phase: 'done', stopReason: 'completed' })}\n`, 'utf8');
 
+// 只落盘,不调用启动入口:这些任务不属于本进程的 live map。
+check('跨进程夹具不在本进程 live map', liveTaskInfos().length === 0);
+const metaCases = [];
+for (const [name, text] of [
+	['empty-object', '{}'],
+	['empty-file', ''],
+	['broken-json', '{broken'],
+	['missing-stopReason', JSON.stringify({ phase: 'done', sessionId: 'probe-session' })],
+	['null-meta', 'null'],
+	['null-stopReason', JSON.stringify({ stopReason: null })],
+	['empty-stopReason', JSON.stringify({ stopReason: '' })],
+	['whitespace-stopReason', JSON.stringify({ stopReason: '   ' })],
+	['invalid-stopReason', JSON.stringify({ stopReason: 123 })],
+]) {
+	for (const [label, pid, status, stale] of [
+		['alive', aliveChild.pid, 'running', false],
+		['dead', dead, 'lost', true],
+	]) {
+		const id = `meta-${name}-${label}`;
+		const dir = makeTask(id, { caller: 'probe-meta-caller', pid });
+		writeFileSync(join(dir, 'meta.json'), text, 'utf8');
+		metaCases.push({ id, status, stale, pidAlive: !stale, derived: stale });
+	}
+}
+for (const stopReason of ['completed', 'error', 'aborted']) {
+	for (const [label, pid] of [['alive', aliveChild.pid], ['dead', dead]]) {
+		const id = `meta-terminal-${stopReason}-${label}`;
+		const dir = makeTask(id, { caller: 'probe-meta-caller', pid });
+		writeFileSync(join(dir, 'meta.json'), JSON.stringify({ stopReason }), 'utf8');
+		metaCases.push({ id, status: stopReason === 'completed' ? 'ok' : 'error', stale: false, pidAlive: null, derived: true });
+	}
+}
+for (const status of ['cancelled', 'deadline', 'killed']) {
+	for (const stopReason of ['completed', 'error']) {
+		const id = `meta-preserve-${status}-${stopReason}`;
+		const dir = makeTask(id, { caller: 'probe-meta-caller', pid: aliveChild.pid, status });
+		writeFileSync(join(dir, 'meta.json'), JSON.stringify({ stopReason }), 'utf8');
+		metaCases.push({ id, status, stale: false, pidAlive: null, derived: false });
+	}
+}
+
 const all = listTasks(500);
 const byId = new Map(all.map((task) => [task.id, task]));
+for (const expected of metaCases) {
+	const listed = byId.get(expected.id);
+	check(`listTasks ${expected.id}`,
+		listed?.status === expected.status && listed?.stale === expected.stale
+		&& listed?.pidAlive === expected.pidAlive && listed?.derived === expected.derived,
+		JSON.stringify({ status: listed?.status, stale: listed?.stale, pidAlive: listed?.pidAlive, derived: listed?.derived }));
+	const state = taskState(expected.id);
+	check(`taskState ${expected.id}`, state.status === expected.status, `status=${state.status}`);
+}
 
 /* ---------------------------------------------------------------- *
  * 1. listTasks 必须按 pid 判活
@@ -93,7 +149,10 @@ check('listTasks 不再把幽灵报成在跑', all.filter((task) => task.caller 
 /* ---------------------------------------------------------------- *
  * 2. taskState 与 listTasks 口径一致
  * ---------------------------------------------------------------- */
-check('taskState 对幽灵也给 lost(与 listTasks 一致)', taskState('ledgergost-000000-00000001').status === 'lost', `taskState.status=${taskState('ledgergost-000000-00000001').status}`);
+const ghostState = taskState('ledgergost-000000-00000001');
+check('taskState 对死 PID + running meta 给 lost,绝不 error', ghostState.status === 'lost', `status=${ghostState.status}`);
+const liveState = taskState('ledgerlive-000000-00000002');
+check('taskState 对活 PID + running meta 保持 running', liveState.status === 'running', `status=${liveState.status}`);
 
 /* ---------------------------------------------------------------- *
  * 3. killByCaller 只杀真的在跑的,并把幽灵回报进 stale
@@ -147,13 +206,20 @@ check('killTreeSync 杀一个早已死掉的 pid → 如实报失败(不谎报�
 const syncBad = killTreeSync(null);
 check('killTreeSync 收到无效 pid → 也是失败', syncBad.ok === false && syncBad.note.includes('pid 无效'), JSON.stringify(syncBad));
 
-try {
-	process.kill(aliveChild.pid, 0);
-} catch {
-	/* 已死 */
+} finally {
+	// 只清理本探针创建的 ChildProcess 和 mkdtemp 目录,不按台账扫描清理。
+	try {
+		for (const child of children) {
+			if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
+				const exited = once(child, 'exit');
+				child.kill();
+				await exited;
+			}
+		}
+	} finally {
+		rmSync(home, { recursive: true, force: true });
+	}
 }
-aliveChild.kill();
-rmSync(home, { recursive: true, force: true });
 
 const failed = results.filter((entry) => !entry.ok);
 process.stdout.write(`\n${results.length - failed.length}/${results.length} 项通过${failed.length === 0 ? ',全绿 ✅' : ',存在失败 ❌'}\n`);

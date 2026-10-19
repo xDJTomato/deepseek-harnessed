@@ -20,3 +20,6 @@ desktop.ini
 .tmp-*
 tmp/
 *.bak-dshsubagent-*
+
+# —— profile patch 的人工备份(本地留档,不入库) ——
+*.bak-*

@@ -337,7 +337,7 @@ function installProfile() {
 	const target = join(dshHome(), 'profiles', 'subagent');
 	if (only !== null && !only.has('profile')) return;
 	ensureDir(target);
-	for (const file of ['package.json', 'cordis.patch.yml', 'subagent-startup.js', 'subagent-runner.js']) {
+	for (const file of ['package.json', 'cordis.patch.yml', 'subagent-startup.js', 'subagent-runner.js', 'subagent-models.js']) {
 		const from = join(source, file);
 		const to = join(target, file);
 		// cordis.patch.yml 的比对要先摘掉本机注入的 provider 块:否则每次 install 都

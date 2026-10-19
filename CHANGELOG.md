@@ -2,6 +2,75 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/);日期为本地实测日期。
 
+## [未发布]
+
+本版主题:**适配 DSH 0.2.1,并把发布默认值定成「工作区读写 + PTC + deepseek-flash(max)」**。
+0.2.1 的凭据解析、插件挂载顺序与工具呈现方式都变了,旧叶子在这三处会静默走坏路径
+(读不到密钥 / 模型清单为空 / 名义上开了 PTC 实际还是原生调用);本版逐个修到有实测证据为止。
+
+### 新增
+
+- **`dsh --profile subagent --print-model-catalogue`**:叶子新增 `subagent-models.js`,在
+  这个模式下只读 `llm.listProviders()` / `llm.listModels()` 与
+  `agentDefaultModel.currentSelection()`,打印一行 JSON 后退场 —— **不发模型调用、不建会话**。
+  取不到某个 provider 的 catalog 时如实记进 `modelErrors`,不当成"这个 provider 没模型"。
+- **`lib/model-catalogue.mjs`**:模型目录与模型策略的唯一归属地。探针结果规范化后带
+  进程内 memo(60 秒)与磁盘缓存(`$DSH_HOME/subagent/state/model-catalogue.json`,跨 MCP 进程);
+  探针起不来时用上一次成功的结果并标 `stale`,连缓存都没有才退回既有 YAML 解析。
+  `dsh_health.models.source` 说明这一次用的是 `native` / `cache` / `yaml`,
+  `modelCatalogueError` 单列探针失败原因。
+- **PTC(程序化工具调用)成为叶子默认形态**:起叶子进程时设 `DSH_TOOLS_MODE=ptc`
+  (`DSH_SUBAGENT_TOOLS_MODE=native` 可改回原生工具调用)。在纯 `ptc` 下模型只看到
+  `run_code` 与一份生成的 SDK,一次程序里可以调度多个工具。
+- **`默认推理强度:`**:策略文件新增这行(发布默认 `max`),只在用到 `默认模型:` 时生效;
+  `dsh_health.modelPolicy.defaultReasoningEffort` 回显解析结果,`dsh_setup` 不动这一行。
+- **裸模型 id 的选路**:同一个 id 在 0.2.1 的多条 provider 路由下可能都登记过,但声明的
+  `reasoningEfforts` 不同。叶子改用原生元数据 `llm.resolveModelInfo(...).reasoning.efforts`
+  挑"真的声明了这个档位"的路由,并对余额 / 凭据 / 档位 / 未知模型这类**路由级**失败
+  自动换下一条重试(每条都是全新会话,失败发生在第一次模型请求、还没有工具执行)。
+
+### 变更
+
+- **发布默认权限从 `danger-full-access` 改为 `workspace-write`**:`sandbox-policy.mode`、
+  `permission.defaultPreset`、`DEFAULT_PERMISSION`、runner 的 `REQUESTED_PERMISSION`
+  统一为 `workspace-write`。要全盘读写仍可显式传 `permission: "danger-full-access"`。
+  0.2.1 实测:`workspace-write` 下 `pwsh` 正常执行(`Write-Output SPAWN-PING` →
+  `"SPAWN-PING\r\n"`、退出码 0、`denied=false`),README §5.1 的"受限模式 Shell 空转"
+  在 0.2.1 已不再复现(检测逻辑保留为兜底)。
+- **策略文件里的 `默认模型:` 真的生效了**:`dsh_task` 不传 `model` 时先用策略文件那一行
+  (能在已接入清单里匹配到才用),匹配不到或仍是 `(未指定)` 才交回 DSH 自己配置的默认模型。
+  此前这行只被当作"给调用方看的建议",用户在文件里写的默认值从来没有用处。
+- `dsh_health.models.defaultModel` 改为取原生 `currentSelection()`,与 runner 实际使用的默认模型同源。
+- 自检夹具显式设 `DSH_SUBAGENT_CATALOGUE=off`(原生路径要起真 DSH 进程,会让夹具失去确定性);
+  原生链路由新脚本 `npm run test:catalogue` 离线覆盖(假探针 + 假 ctx)。
+
+### 修复(DSH 0.2.1 兼容)
+
+- **凭据**:0.2.1 起 provider 的 `apiKeyEnv` 先问 `credentials` 服务,而 headless 组合把
+  这一行关掉了 —— 叶子于是报 `MISSING_CREDENTIAL: llm-pi-ai: no credential for provider
+  route "…"`。profile 重新启用 `credentials` 行后,`$DSH_HOME/.credentials.yaml` 里的
+  `refs` 正常解析。
+- **模型枚举**:`subagent-models` 原先在插件树挂载中途就调 `llm.listProviders()`,0.2.1 下
+  provider 还没注册完,探针返回空清单(只剩一个空 catalog 的路由)。改为先
+  `await ctx.get('loader')?.await()` 再枚举。
+- **`tool-presentation` 行在叶子 profile 里不生效**:它声明的是**预设**挂载作用域,GUI 的
+  PTC 是把它放进 `ptc` 预设;叶子不经过预设注册表,挂上去等于没声明(实测模型仍拿到全部
+  原生 schema、工具清单里没有 `run_code`)。改用 `tools` 行的部署级 `mode`。
+- **不能直接覆盖 `tools` 行**:profile patch 用 `- id: tools` 改其 `config` 会撞上
+  「its declared dsh requirements cannot be validated: Cannot read properties of undefined
+  (reading 'startsWith')」,`tools` 行被禁用、整棵树起不来。所以走 headless 自己留的
+  `DSH_TOOLS_MODE` 开关。
+- **CLI 默认模型崩溃**:`bin/dsh-subagent.mjs` 把 `nativeCatalogue().providers`(裸记录)
+  传给 `resolveDefaultSelection`,探针一旦成功就 `Object.entries(undefined)` 崩溃
+  (0.2.0 之前探针从未成功,所以一直没暴露);同时补上 CLI 侧漏传的 `reasoningEffort`。
+
+### 测试
+
+- 新增 `test/model-catalogue-probe.mjs`(34 项):叶子插件的枚举契约、桥接层的
+  规范化/缓存/降级三态、策略默认值与默认推理强度的落点、路由级失败的判定,以及
+  "工作区读写 / PTC / 凭据行确实接上"的部署接线断言(声明了但没接线是自检最容易漏的洞)。
+- `npm run test:all` 增加该脚本;本轮 `test:all` 合计 **434 项全绿**。
+
 ## [0.1.12] — 2026-10-08
 
 本版主题:**适配 DSH 2.0.15 / 内核 0.1.7-rc.2(与 npm 上的 0.2.0-rc.2 同一套契约)**。

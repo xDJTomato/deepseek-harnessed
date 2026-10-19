@@ -8,25 +8,27 @@
  * `lib/launcher.mjs` 原先直接把垫片里的参数拿去 spawn,不做入口存在性校验,故障就以底层
  * MODULE_NOT_FOUND 的形式冒出来(看起来像"任务被静默吞了")。
  *
- * 这个探针只读文件系统、不 spawn 任何东西(并把 PATH/APPDATA 收紧到夹具里,否则本机真实的
- * dsh.cmd 会顶上来),断言五组:
+ * 默认仅使用隔离的 PATH/APPDATA/LOCALAPPDATA/DSH_HOME 夹具;无模型任务。
+ * ASAR 缺失入口用 --version 验证拒绝;--real 才恢复真实环境并验证官方版本。断言包含:
  *   A. 垫片指向不存在的 app.asar 入口、而 resources\app\lib 下真有 → 自愈改指存在的那个,
  *      其余参数与顺序一字不动(候选优先级:app 先于 app.asar.unpacked);
  *   B. 所有候选都失效 → **聚合报错**,逐条列出每个垫片为什么不行,并给出处置办法;
  *   C. exe 不在安装根时,靠 `app.asar` ↔ `app` 互换命中同一位置;
  *   D. 候选 1 是入口失效的陈旧残留、候选 2 可用 → **回退到候选 2 并成功**
  *      (一个残留垫片不该埋掉本机其它可用的 dsh);
- *   E. 本机真实垫片解析出的入口必须真实存在(修好之前这条就是红的)。
+ *   E-H. 新版 %~dp0 格式、显式优先、新旧/PATH 回退、缺失入口/可执行文件拒绝与环境隔离。
+ *   I. --real 显式验证真实官方 CLI --version(普通 Node 不以 existsSync 检查 ASAR 内路径)。
  *
  * 夹具目录按用户约定放在 %TEMP%\dsh-launcher-test-<随机后缀>,**测试结束不删除**(要清理请移到 D:\Stash)。
  *
  * 用法:
  *   node test/launcher-heal-probe.mjs
  */
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveLauncher } from '../lib/launcher.mjs';
+import { childEnv, resolveLauncher } from '../lib/launcher.mjs';
 
 let total = 0;
 let passed = 0;
@@ -39,21 +41,21 @@ function check(name, ok, detail = '') {
 const fixtures = mkdtempSync(join(tmpdir(), 'dsh-launcher-test-'));
 console.log(`夹具目录(按约定保留,不删除): ${fixtures}\n`);
 
-const REAL_ENV = { PATH: process.env.PATH, APPDATA: process.env.APPDATA, SHIM: process.env.DSH_SUBAGENT_DSH_SHIM };
+const REAL_ENV = Object.fromEntries(['PATH', 'APPDATA', 'LOCALAPPDATA', 'DSH_SUBAGENT_DSH_SHIM', 'DSH_HOME'].map((key) => [key, process.env[key]]));
 
 /** 把解析面收紧到夹具里:只留显式指定的候选 1 与候选 2。 */
-function isolateEnv({ shim, appData }) {
-	if (shim === undefined) delete process.env.DSH_SUBAGENT_DSH_SHIM;
-	else process.env.DSH_SUBAGENT_DSH_SHIM = shim;
-	if (appData === undefined) delete process.env.APPDATA;
-	else process.env.APPDATA = appData;
-	process.env.PATH = '';
+function isolateEnv({ shim, appData, localAppData, path = '' }) {
+	for (const [key, value] of Object.entries({ DSH_SUBAGENT_DSH_SHIM: shim, APPDATA: appData, LOCALAPPDATA: localAppData })) {
+		if (value === undefined) delete process.env[key];
+		else process.env[key] = value;
+	}
+	process.env.PATH = path;
+	process.env.DSH_HOME = join(fixtures, 'isolated-home');
 }
 
 /** 恢复本机真实环境(最后一个用例要解析真实垫片)。 */
 function restoreEnv() {
-	const saved = { PATH: REAL_ENV.PATH, APPDATA: REAL_ENV.APPDATA, DSH_SUBAGENT_DSH_SHIM: REAL_ENV.SHIM };
-	for (const [key, value] of Object.entries(saved)) {
+	for (const [key, value] of Object.entries(REAL_ENV)) {
 		if (value === undefined) delete process.env[key];
 		else process.env[key] = value;
 	}
@@ -61,6 +63,7 @@ function restoreEnv() {
 
 /** 在 `dir` 下写一份 dsh.cmd 垫片,返回它的路径(不设置环境变量)。 */
 function writeShim(dir, exe, entry, tail = []) {
+	makeEntry(exe);
 	mkdirSync(dir, { recursive: true });
 	const shim = join(dir, 'dsh.cmd');
 	writeFileSync(shim, [
@@ -169,16 +172,71 @@ check('D 候选 1 入口失效时回退到候选 2(一个陈旧残留不该硬�
 check('D 回退后的入口文件确实存在',
 	launcherD !== null && existsSync(launcherD.args[1]), launcherD === null ? '同上' : launcherD.args[1]);
 
-// ---- 用例 E:本机真实垫片解析出的入口必须真实存在 ----
+// ---- 新版格式夹具:保持官方 shim 原文;用目录形态验证解析,不伪装真实 ASAR ----
+const localE = join(fixtures, 'case-e', 'localappdata');
+const installE = join(localE, 'Programs', 'DeepSeek Harness');
+const exeE = makeEntry(join(installE, 'DeepSeek Harness.exe'));
+const entryE = makeEntry(join(installE, 'resources', 'app.asar', 'dsh', 'node_modules', '@deepseek-ai', 'dsh-desktop-host', 'lib', 'cli.js'));
+const shimE = join(installE, 'resources', 'runtime', 'cli', 'bin', 'dsh.cmd');
+mkdirSync(join(shimE, '..'), { recursive: true });
+writeFileSync(shimE, [
+	'@echo off', 'setlocal DisableDelayedExpansion', 'set "ELECTRON_RUN_AS_NODE=1"',
+	'"%~dp0..\\..\\..\\..\\DeepSeek Harness.exe" --expose-internals "%~dp0..\\..\\..\\app.asar\\dsh\\node_modules\\@deepseek-ai\\dsh-desktop-host\\lib\\cli.js" %*',
+	'exit /b %errorlevel%', '',
+].join('\r\n'), 'utf8');
+isolateEnv({ localAppData: localE, appData: appDataD });
+const launcherE = resolveLauncher();
+check('E 新版官方 shim 优先于旧 APPDATA shim', launcherE.shim === shimE);
+check('E %~dp0 可执行文件解析为安装内绝对路径', launcherE.command === exeE);
+check('E %~dp0 入口解析且参数顺序不变', JSON.stringify(launcherE.args) === JSON.stringify(['--expose-internals', entryE]));
+check('E 官方 Node 模式保留且不注入旧默认 profile', launcherE.env.ELECTRON_RUN_AS_NODE === '1' && launcherE.env.DSH_DESKTOP_DEFAULT_PROFILE === undefined);
+
+// ---- 显式 env 优先;陈旧显式/旧 shim 不阻挡新版;失效新版继续旧/PATH ----
+isolateEnv({ shim: goodShimD, localAppData: localE, appData: appDataD });
+check('F 显式 env 仍优先于新版官方入口', resolveLauncher().shim === goodShimD);
+isolateEnv({ shim: staleShimD, localAppData: localE, appData: appDataD });
+check('F 陈旧显式 shim 回退新版,旧陈旧 shim 不阻挡新版', resolveLauncher().shim === shimE);
+isolateEnv({ shim: join(fixtures, 'absent.cmd'), localAppData: localE });
+check('F 不存在的显式 shim 回退新版', resolveLauncher().shim === shimE);
+const localG = join(fixtures, 'case-g', 'localappdata');
+const brokenNewG = writeShim(join(localG, 'Programs', 'DeepSeek Harness', 'resources', 'runtime', 'cli', 'bin'), join(fixtures, 'case-g', 'missing-install', 'DeepSeek Harness.exe'), join(fixtures, 'case-g', 'missing.js'));
+isolateEnv({ localAppData: localG, appData: appDataD });
+check('G 新版失效仍回退旧 APPDATA shim', resolveLauncher().shim === goodShimD);
+isolateEnv({ localAppData: localG, path: join(goodShimD, '..') });
+check('G 新版失效仍回退 PATH shim', resolveLauncher().shim === goodShimD);
+const directG = makeEntry(join(fixtures, 'case-g', 'path-exe', 'dsh.exe'));
+isolateEnv({ path: join(directG, '..') });
+check('G PATH dsh.exe 兼容保留', resolveLauncher().command === directG);
+
+// ---- ASAR 是文件不能当目录;缺失入口和 exe 均不能伪装成功 ----
+const archiveH = makeEntry(join(fixtures, 'case-h', 'resources', 'app.asar'));
+const shimH = join(fixtures, 'case-h', 'dsh.cmd');
+writeFileSync(shimH, `set "ELECTRON_RUN_AS_NODE=1"\n"${process.execPath}" --expose-internals "${join(archiveH, 'missing.js')}" %*\n`, 'utf8');
+isolateEnv({ shim: shimH });
+let rejectedH = false;
+try { resolveLauncher(); } catch { rejectedH = true; }
+check('H 存在 archive 文件但入口缺失仍失败', rejectedH);
+writeFileSync(shimH, `"${join(fixtures, 'case-h', 'missing.exe')}" "${goodEntryD}" %*\n`, 'utf8');
+let rejectedExeH = false;
+try { resolveLauncher(); } catch { rejectedExeH = true; }
+check('H 存在入口但可执行文件缺失仍失败', rejectedExeH);
+check('H childEnv 保留进程显式 DSH_HOME 优先级', childEnv(launcherA).DSH_HOME === process.env.DSH_HOME);
+check('H fixture 未使用本机 APPDATA/LOCALAPPDATA/PATH/DSH_HOME',
+	process.env.APPDATA === undefined && process.env.LOCALAPPDATA === undefined && process.env.PATH === '' && process.env.DSH_HOME.startsWith(fixtures));
+
+// ---- 真实配置仅 --real 显式启用;只跑官方 --version,不加载模型任务 ----
 restoreEnv();
-try {
-	const real = resolveLauncher();
-	const entry = real.args.find((arg) => /\.m?js$/i.test(arg));
-	check('E 本机真实垫片的入口文件真实存在',
-		typeof entry === 'string' && existsSync(entry), `${real.shim} → ${String(entry)}`);
-} catch (error) {
-	check('E 本机真实垫片的入口文件真实存在', false, `解析失败:${error.message}`);
-}
+if (process.argv.includes('--real')) {
+	try {
+		const real = resolveLauncher();
+		const version = spawnSync(real.command, [...real.args, '--version'], {
+			env: childEnv(real), encoding: 'utf8', timeout: 5000, windowsHide: true,
+		});
+		check('I 本机真实官方入口 --version 成功', version.status === 0 && /^\d+\.\d+\.\d+/.test(version.stdout.trim()), `${real.shim} version=${version.stdout.trim()}`);
+	} catch (error) {
+		check('I 本机真实官方入口 --version 成功', false, `解析失败:${error.message}`);
+	}
+} else console.log('真实环境验证未执行(需显式 --real)。');
 
 console.log(`\n${passed}/${total} 通过`);
 console.log(`夹具保留在: ${fixtures}(按用户约定不删除;要清理请移到 D:\\Stash)`);
